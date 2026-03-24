@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.DS_Store
+
+# Downloaded assets and datasets (too large for git)
+deps/robocasa/robocasa/models/assets/textures/
+deps/robocasa/robocasa/models/assets/generative_textures/
+deps/robocasa/robocasa/models/assets/fixtures/
+deps/robocasa/robocasa/models/assets/objects/
+deps/robocasa/datasets/
+
+# Private macros (user-specific)
+deps/robocasa/robocasa/macros_private.py
+deps/robosuite/robosuite/macros_private.py
