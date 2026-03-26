@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 .DS_Store
+.vscode/*
 
 # Downloaded assets and datasets (too large for git)
 deps/robocasa/robocasa/models/assets/textures/
@@ -15,3 +16,6 @@ deps/robocasa/datasets/
 # Private macros (user-specific)
 deps/robocasa/robocasa/macros_private.py
 deps/robosuite/robosuite/macros_private.py
+
+# Log directories of rl training runs
+runs/
