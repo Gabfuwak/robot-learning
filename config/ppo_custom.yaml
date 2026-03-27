@@ -1,0 +1,46 @@
+# PPO training configuration (custom from-scratch implementation)
+trainer: custom_ppo
+
+# --- Environment ---
+env_name: PickPlaceCounterToCabinet
+layout_ids: -2
+style_ids: -2
+horizon: 500
+control_freq: 20
+
+# --- Observation ---
+use_camera_obs: false
+image_size: 64
+
+# --- Rollout ---
+n_steps: 2048
+n_envs: 1            # custom trainer currently supports single env
+
+# --- Update ---
+n_epochs: 10
+batch_size: 64
+clip_range: 0.2
+vf_coef: 0.5
+ent_coef: 0.0
+max_grad_norm: 0.5
+
+# --- Return / advantage ---
+gamma: 0.99
+gae_lambda: 0.95
+
+# --- Architecture ---
+state_embed_dim: 256
+image_embed_dim: 128
+net_arch: [256, 256]
+
+# --- Optimiser ---
+learning_rate: 0.0003
+
+# --- Training ---
+total_timesteps: 1000000
+seed: 42
+
+# --- Logging / saving ---
+save_dir: runs
+log_dir: /tmp/rl_logs
+log_interval: 1      # print stats every N updates

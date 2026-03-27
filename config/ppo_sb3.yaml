@@ -1,0 +1,41 @@
+# PPO training configuration (SB3 backend)
+trainer: sb3
+
+# --- Algorithm ---
+algo: PPO
+algo_kwargs:
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  clip_range: 0.2
+  ent_coef: 0.0
+  gae_lambda: 0.95
+
+# --- Environment ---
+env_name: PickPlaceCounterToCabinet
+layout_ids: -2
+style_ids: -2
+horizon: 500
+control_freq: 20
+
+# --- Observation ---
+use_camera_obs: false
+image_size: 64
+
+# --- Architecture ---
+state_embed_dim: 256
+image_embed_dim: 128
+net_arch: [256, 256]
+
+# --- Common hyperparameters ---
+seed: 42
+total_timesteps: 1000000
+learning_rate: 0.0003
+gamma: 0.99
+n_envs: 8            # PPO benefits from parallel collection
+
+# --- Logging / saving ---
+save_dir: runs
+log_dir: /tmp/rl_logs
+checkpoint_freq: 50000
+n_eval_episodes: 5
