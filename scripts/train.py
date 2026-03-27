@@ -2,7 +2,7 @@
 Training entry point.
 
 Loads a YAML config, optionally overrides individual fields from the CLI,
-then dispatches to the appropriate trainer (SB3 or custom PPO).
+then dispatches to the SB3 trainer.
 
 Usage
 ─────
@@ -11,9 +11,6 @@ Usage
 
     # SB3-based PPO with 8 parallel envs
     python scripts/train.py --config config/ppo_sb3.yaml
-
-    # Custom from-scratch PPO
-    python scripts/train.py --config config/ppo_custom.yaml
 
     # Override any field on the fly (dot notation for nested algo_kwargs)
     python scripts/train.py --config config/sac.yaml \\
@@ -85,85 +82,6 @@ def load_config(config_path: str, overrides: list[str]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Trainer dispatch
-# ---------------------------------------------------------------------------
-
-def run_sb3(cfg: dict):
-    from rl.trainer import TrainConfig, train
-    from rl.reward import StagedPickPlaceReward
-
-    # Pop trainer key — not part of TrainConfig
-    cfg.pop("trainer", None)
-    seed = cfg.pop("seed", 42)
-
-    train_cfg = TrainConfig(seed=seed, **{k: v for k, v in cfg.items()
-                                          if k in TrainConfig.__dataclass_fields__})
-    train(train_cfg, reward_fn=StagedPickPlaceReward())
-
-
-def run_custom_ppo(cfg: dict):
-    from robocasa.environments.kitchen.atomic.kitchen_pick_place import PickPlaceCounterToCabinet
-    from robosuite.controllers import load_composite_controller_config
-
-    from rl.custom_ppo import PPOConfig, PPOTrainer
-    from rl.env_wrapper import RoboCasaWrapper
-    from rl.reward import StagedPickPlaceReward
-    from rl.trainer import ENV_REGISTRY
-
-    cfg.pop("trainer", None)
-    env_name     = cfg.pop("env_name", "PickPlaceCounterToCabinet")
-    layout_ids   = cfg.pop("layout_ids", -2)
-    style_ids    = cfg.pop("style_ids", -2)
-    horizon      = cfg.pop("horizon", 500)
-    control_freq = cfg.pop("control_freq", 20)
-    image_size   = cfg.pop("image_size", 64)
-    use_camera_obs = cfg.pop("use_camera_obs", False)
-    camera_names = cfg.pop("camera_names", [
-        "robot0_agentview_left",
-        "robot0_agentview_right",
-        "robot0_eye_in_hand",
-    ])
-    seed = cfg.pop("seed", 42)
-
-    # Build raw env
-    env_cls = ENV_REGISTRY[env_name]
-    ctrl    = load_composite_controller_config(controller=None, robot="PandaOmron")
-    raw_env = env_cls(
-        robots="PandaOmron",
-        controller_configs=ctrl,
-        use_camera_obs=use_camera_obs,
-        has_renderer=False,
-        has_offscreen_renderer=use_camera_obs,
-        use_object_obs=True,
-        camera_names=camera_names if use_camera_obs else [],
-        camera_heights=image_size,
-        camera_widths=image_size,
-        control_freq=control_freq,
-        ignore_done=False,
-        seed=seed,
-        horizon=horizon,
-        layout_ids=layout_ids,
-        style_ids=style_ids,
-    )
-    raw_env.reset()
-
-    env = RoboCasaWrapper(
-        raw_env,
-        reward_fn=StagedPickPlaceReward(),
-        use_camera_obs=use_camera_obs,
-        camera_names=camera_names,
-        image_size=image_size,
-    )
-
-    # Build PPOConfig from remaining keys
-    ppo_cfg = PPOConfig(**{k: v for k, v in cfg.items()
-                           if k in PPOConfig.__dataclass_fields__})
-    trainer = PPOTrainer(ppo_cfg, env)
-    trainer.train()
-    env.close()
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -177,19 +95,20 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config, args.set)
-    trainer_type = cfg.get("trainer", "sb3")
 
-    print(f"Trainer : {trainer_type}")
     print(f"Config  : {args.config}")
     if args.set:
         print(f"Overrides: {args.set}")
 
-    if trainer_type == "sb3":
-        run_sb3(cfg)
-    elif trainer_type == "custom_ppo":
-        run_custom_ppo(cfg)
-    else:
-        raise ValueError(f"Unknown trainer '{trainer_type}'. Choose: sb3, custom_ppo")
+    from rl.trainer import TrainConfig, train
+    from rl.reward import StagedPickPlaceReward
+
+    cfg.pop("trainer", None)
+    seed = cfg.pop("seed", 42)
+
+    train_cfg = TrainConfig(seed=seed, **{k: v for k, v in cfg.items()
+                                          if k in TrainConfig.__dataclass_fields__})
+    train(train_cfg, reward_fn=StagedPickPlaceReward())
 
 
 if __name__ == "__main__":

@@ -1,26 +1,24 @@
 """
 Evaluation entry point.
 
-Loads a trained checkpoint and runs N evaluation episodes, printing
-per-episode and aggregate stats.
-
-Works with both SB3 checkpoints (.zip) and custom PPO checkpoints (.pt).
+Loads a trained SB3 checkpoint and runs N evaluation episodes, printing
+per-episode and aggregate stats. Optionally saves a tiled multi-camera video.
 
 Usage
 ─────
-    # Evaluate an SB3 model
+    # Eval only (no video)
     python scripts/eval.py \\
         --config config/sac.yaml \\
         --checkpoint runs/my_run/sac_final.zip \\
         --n_episodes 20
 
-    # Evaluate a custom PPO model
+    # Save tiled multi-camera video (4 views, 2x2 grid)
     python scripts/eval.py \\
-        --config config/ppo_custom.yaml \\
-        --checkpoint runs/my_run/ppo_final.pt \\
-        --n_episodes 20
+        --config config/sac.yaml \\
+        --checkpoint runs/my_run/sac_final.zip \\
+        --save_video --video_dir eval_videos/my_run
 
-    # Render while evaluating
+    # Render live while evaluating
     python scripts/eval.py \\
         --config config/sac.yaml \\
         --checkpoint runs/my_run/sac_final.zip \\
@@ -48,12 +46,40 @@ sys.path.insert(0, os.path.join(ROOT, "deps", "robocasa"))
 sys.path.insert(0, os.path.join(ROOT, "deps", "robosuite"))
 
 
-# ---------------------------------------------------------------------------
-# Environment builder (shared between SB3 and custom eval)
-# ---------------------------------------------------------------------------
+VIZ_CAMERAS = [
+    "robot0_agentview_center",
+    "robot0_agentview_left",
+    "robot0_agentview_right",
+    "robot0_eye_in_hand",
+]
 
-def build_env(cfg: dict, split: str, render: bool):
-    """Build a single (unwrapped) RoboCasaWrapper for evaluation."""
+
+def render_tiled_frame(raw_env, width: int, height: int) -> np.ndarray:
+    """Render all VIZ_CAMERAS and stitch into a 2-column tiled image."""
+    cols = 2
+    rows = (len(VIZ_CAMERAS) + cols - 1) // cols
+    tile_rows = []
+    for r in range(rows):
+        row_frames = []
+        for c in range(cols):
+            idx = r * cols + c
+            if idx < len(VIZ_CAMERAS):
+                frame = raw_env.sim.render(
+                    camera_name=VIZ_CAMERAS[idx],
+                    width=width,
+                    height=height,
+                    depth=False,
+                )
+                frame = np.flipud(frame)
+            else:
+                frame = np.zeros((height, width, 3), dtype=np.uint8)
+            row_frames.append(frame)
+        tile_rows.append(np.concatenate(row_frames, axis=1))
+    return np.concatenate(tile_rows, axis=0)
+
+
+def build_env(cfg: dict, split: str, render: bool, save_video: bool = False, render_size: int = 256):
+    """Build a single RoboCasaWrapper for evaluation."""
     from robosuite.controllers import load_composite_controller_config
     from rl.env_wrapper import RoboCasaWrapper
     from rl.reward import StagedPickPlaceReward
@@ -71,13 +97,12 @@ def build_env(cfg: dict, split: str, render: bool):
     ])
     seed = cfg.get("seed", 42)
 
-    # Split determines which layouts/styles are used
     if split == "test":
-        layout_ids, style_ids = -1, -1   # layouts/styles 1-10
+        layout_ids, style_ids = -1, -1
     elif split == "train":
-        layout_ids, style_ids = -2, -2   # layouts/styles 11-60
+        layout_ids, style_ids = -2, -2
     else:
-        layout_ids, style_ids = -3, -3   # all
+        layout_ids, style_ids = -3, -3
 
     env_cls = ENV_REGISTRY[env_name]
     ctrl    = load_composite_controller_config(controller=None, robot="PandaOmron")
@@ -86,14 +111,14 @@ def build_env(cfg: dict, split: str, render: bool):
         controller_configs=ctrl,
         use_camera_obs=use_camera,
         has_renderer=render,
-        has_offscreen_renderer=use_camera and not render,
+        has_offscreen_renderer=(use_camera and not render) or save_video,
         use_object_obs=True,
-        camera_names=camera_names if use_camera else [],
-        camera_heights=image_size,
-        camera_widths=image_size,
+        camera_names=list(set((camera_names if use_camera else []) + (VIZ_CAMERAS if save_video else []))),
+        camera_heights=render_size if save_video else image_size,
+        camera_widths=render_size if save_video else image_size,
         control_freq=control_freq,
         ignore_done=False,
-        seed=seed + 999,   # different seed from training
+        seed=seed + 999,
         horizon=horizon,
         layout_ids=layout_ids,
         style_ids=style_ids,
@@ -109,86 +134,12 @@ def build_env(cfg: dict, split: str, render: bool):
     )
 
 
-# ---------------------------------------------------------------------------
-# SB3 evaluation
-# ---------------------------------------------------------------------------
-
-def eval_sb3(checkpoint: str, cfg: dict, n_episodes: int, split: str, render: bool):
-    from stable_baselines3.common.base_class import BaseAlgorithm
-    from rl.trainer import ALGO_REGISTRY
-
-    algo_name = cfg.get("algo", "SAC")
-    algo_cls  = ALGO_REGISTRY[algo_name]
-
-    env = build_env(cfg, split, render)
-
-    print(f"Loading {algo_name} checkpoint: {checkpoint}")
-    model: BaseAlgorithm = algo_cls.load(checkpoint, env=None)
-
-    results = _run_episodes(
-        n_episodes=n_episodes,
-        env=env,
-        predict_fn=lambda obs: model.predict(obs["state"], deterministic=True)[0],
-        render=render,
-    )
-
-    env.close()
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Custom PPO evaluation
-# ---------------------------------------------------------------------------
-
-def eval_custom_ppo(checkpoint: str, cfg: dict, n_episodes: int, split: str, render: bool):
-    import torch
-    from rl.custom_ppo import PPOConfig, ActorCritic
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    env    = build_env(cfg, split, render)
-
-    print(f"Loading custom PPO checkpoint: {checkpoint}")
-    ckpt   = torch.load(checkpoint, map_location=device, weights_only=False)
-    ppo_cfg: PPOConfig = ckpt["cfg"]
-    policy = ActorCritic(env.observation_space, env.action_space.shape[0], ppo_cfg).to(device)
-    policy.load_state_dict(ckpt["policy_state"])
-    policy.eval()
-
-    def predict_fn(obs: dict) -> np.ndarray:
-        obs_t = {
-            k: torch.from_numpy(np.array(v, dtype=np.float32)).unsqueeze(0).to(device)
-            for k, v in obs.items()
-        }
-        action, _, _ = policy.predict(obs_t, deterministic=True)
-        return action[0]
-
-    results = _run_episodes(
-        n_episodes=n_episodes,
-        env=env,
-        predict_fn=predict_fn,
-        render=render,
-    )
-
-    env.close()
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Shared episode runner
-# ---------------------------------------------------------------------------
-
-def _run_episodes(n_episodes: int, env, predict_fn, render: bool) -> dict:
-    """
-    Run n_episodes and return aggregate stats.
-
-    Returns dict with keys:
-        episode_rewards  list[float]
-        episode_lengths  list[int]
-        success_rate     float
-        mean_reward      float
-        std_reward       float
-    """
-    import robocasa.utils.object_utils as OU
+def _run_episodes(n_episodes: int, env, predict_fn, render: bool,
+                  save_video: bool = False, video_dir: str = "eval_videos",
+                  render_size: int = 256) -> dict:
+    if save_video:
+        import imageio
+        os.makedirs(video_dir, exist_ok=True)
 
     episode_rewards = []
     episode_lengths = []
@@ -199,6 +150,7 @@ def _run_episodes(n_episodes: int, env, predict_fn, render: bool) -> dict:
         total_reward = 0.0
         step = 0
         done = False
+        frames = []
 
         while not done:
             action = predict_fn(obs)
@@ -210,7 +162,10 @@ def _run_episodes(n_episodes: int, env, predict_fn, render: bool) -> dict:
             if render:
                 env.render()
 
-        # Check task success via environment internals
+            if save_video:
+                frame = render_tiled_frame(env.unwrapped_env, render_size, render_size)
+                frames.append(frame)
+
         raw_env = env.unwrapped_env
         success = bool(raw_env._check_success())
 
@@ -224,7 +179,12 @@ def _run_episodes(n_episodes: int, env, predict_fn, render: bool) -> dict:
             f"success={'YES' if success else 'NO '}"
         )
 
-    results = {
+        if save_video and frames:
+            vid_path = os.path.join(video_dir, f"ep_{ep:02d}.mp4")
+            imageio.mimsave(vid_path, frames, fps=20)
+            print(f"    -> video saved to {vid_path}")
+
+    return {
         "episode_rewards": episode_rewards,
         "episode_lengths": episode_lengths,
         "success_rate":    float(np.mean(successes)),
@@ -232,7 +192,6 @@ def _run_episodes(n_episodes: int, env, predict_fn, render: bool) -> dict:
         "std_reward":      float(np.std(episode_rewards)),
         "mean_length":     float(np.mean(episode_lengths)),
     }
-    return results
 
 
 def print_summary(results: dict):
@@ -243,38 +202,48 @@ def print_summary(results: dict):
     print("────────────────────────────────────────────────")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained RL policy on RoboCasa.")
-    parser.add_argument("--config",     required=True, help="Path to YAML config file used for training.")
-    parser.add_argument("--checkpoint", required=True, help="Path to checkpoint (.zip for SB3, .pt for custom PPO).")
-    parser.add_argument("--n_episodes", type=int, default=10, help="Number of evaluation episodes.")
-    parser.add_argument("--split",      default="test", choices=["train", "test", "all"],
+    parser.add_argument("--config",      required=True, help="Path to YAML config file used for training.")
+    parser.add_argument("--checkpoint",  required=True, help="Path to SB3 checkpoint (.zip).")
+    parser.add_argument("--n_episodes",  type=int, default=10, help="Number of evaluation episodes.")
+    parser.add_argument("--split",       default="test", choices=["train", "test", "all"],
                         help="Which layout/style distribution to evaluate on (default: test).")
-    parser.add_argument("--render",     action="store_true", help="Render the environment during eval.")
+    parser.add_argument("--render",      action="store_true", help="Render the environment live during eval.")
+    parser.add_argument("--save_video",  action="store_true", help="Save tiled multi-camera video per episode.")
+    parser.add_argument("--video_dir",   default="eval_videos", help="Directory to save videos (default: eval_videos).")
+    parser.add_argument("--render_size", type=int, default=256, help="Width/height of each camera tile (default: 256).")
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    trainer_type = cfg.get("trainer", "sb3")
-    checkpoint   = args.checkpoint
-
-    print(f"Trainer    : {trainer_type}")
-    print(f"Checkpoint : {checkpoint}")
+    algo_name = cfg.get("algo", "SAC")
+    print(f"Algo       : {algo_name}")
+    print(f"Checkpoint : {args.checkpoint}")
     print(f"Episodes   : {args.n_episodes}")
     print(f"Split      : {args.split}")
 
-    if trainer_type == "sb3":
-        results = eval_sb3(checkpoint, cfg, args.n_episodes, args.split, args.render)
-    elif trainer_type == "custom_ppo":
-        results = eval_custom_ppo(checkpoint, cfg, args.n_episodes, args.split, args.render)
-    else:
-        raise ValueError(f"Unknown trainer '{trainer_type}'.")
+    from stable_baselines3.common.base_class import BaseAlgorithm
+    from rl.trainer import ALGO_REGISTRY
 
+    algo_cls = ALGO_REGISTRY[algo_name]
+    env      = build_env(cfg, args.split, args.render, args.save_video, args.render_size)
+
+    print(f"Loading {algo_name} checkpoint: {args.checkpoint}")
+    model: BaseAlgorithm = algo_cls.load(args.checkpoint, env=None)
+
+    results = _run_episodes(
+        n_episodes=args.n_episodes,
+        env=env,
+        predict_fn=lambda obs: model.predict(obs, deterministic=True)[0],
+        render=args.render,
+        save_video=args.save_video,
+        video_dir=args.video_dir,
+        render_size=args.render_size,
+    )
+
+    env.close()
     print_summary(results)
 
 
