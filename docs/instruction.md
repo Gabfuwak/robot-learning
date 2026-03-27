@@ -174,45 +174,56 @@ vec_env = SubprocVecEnv([make_env_fn] * n)  # n parallel envs
 
 ---
 
-## 7. RL Training (PPO example)
+## 7. RL Training
 
-```python
-from stable_baselines3 import PPO
+All training is configured via a YAML file and launched through `scripts/train.py`:
 
-model = PPO("MlpPolicy", vec_env, verbose=1)
-model.learn(total_timesteps=1_000_000)
-model.save("ppo_pnp")
-```
-
-Run the training script:
 ```bash
-python helpers/rl_scripts/train_robocasa.py --n_envs 4 --headless
+# SAC (default)
+python scripts/train.py --config config/sac.yaml
+
+# Override fields without editing the YAML
+python scripts/train.py --config config/sac.yaml \
+    --set total_timesteps=500000 seed=1 algo_kwargs.batch_size=128
 ```
+
+The YAML must contain at minimum an `algo` key (e.g. `SAC`, `PPO`, `TD3`). All other
+fields map directly to `TrainConfig` in `rl/trainer.py`. See `config/sac.yaml` for a
+complete example.
 
 ---
 
 ## 8. Evaluation
 
+Run `scripts/eval.py` against a saved checkpoint:
+
 ```bash
-python helpers/rl_scripts/eval_robocasa.py \
-    --model_path runs/ppo_pnp.zip \
-    --episodes 10 \
-    --save_video \
-    --video_path eval_videos/
+# Stats only
+python scripts/eval.py \
+    --config config/sac.yaml \
+    --checkpoint runs/my_run/sac_final.zip
+
+# Save tiled multi-camera video (2×2 grid, one .mp4 per episode)
+python scripts/eval.py \
+    --config config/sac.yaml \
+    --checkpoint runs/my_run/sac_final.zip \
+    --save_video --video_dir eval_videos/my_run
+
+# Evaluate on training distribution
+python scripts/eval.py \
+    --config config/sac.yaml \
+    --checkpoint runs/my_run/sac_final.zip \
+    --split train
 ```
 
-Video frames are rendered from all four cameras and tiled into a 2×2 grid.
+Videos are saved as `eval_videos/my_run/ep_00.mp4`, `ep_01.mp4`, etc.
+Each frame is a 2×2 tile of four cameras (`agentview_center`, `agentview_left`,
+`agentview_right`, `eye_in_hand`) rendered at `--render_size` (default 256) pixels each,
+giving a 512×512 output frame at 20 fps.
 
+The unwrapped env is accessible inside `RoboCasaWrapper` via:
 ```python
-# Manual multi-camera render (inside eval loop)
-frame = raw_env.sim.render(camera_name="robot0_agentview_center",
-                            width=256, height=256, depth=False)
-frame = np.flipud(frame)   # MuJoCo renders upside-down
-```
-
-Access the unwrapped env through wrapper chain:
-```python
-raw_env = env.env.env   # GymWrapper -> Monitor -> raw env
+raw_env = env.unwrapped_env
 ```
 
 ---
