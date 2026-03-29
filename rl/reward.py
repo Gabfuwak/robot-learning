@@ -13,6 +13,7 @@ Available reward functions
     ReleasingPickPlaceReward    — 4-stage: adds an explicit release stage after placement
     DensePickPlaceReward        — fully dense, all signals combined without hard stage gates
     BinaryMilestoneReward       — sparse bonuses at each milestone, no shaping between them
+    ComposedPickPlaceReward     — additive components: r_reach + r_lift + r_transport + success
 
 Key design notes
 ────────────────
@@ -31,6 +32,11 @@ Key design notes
     transport (privileged info available during training). This guides the
     gripper toward the cabinet opening without requiring the object to reach
     the exact center.
+
+  - Reach reward is delta-based: positive when the gripper moves closer to
+    the target object, negative when it moves away, and exactly 0 once the
+    gripper successfully grasps the object. Each subclass stores
+    _prev_reach_dist and resets it on episode start via on_episode_reset().
 """
 
 from __future__ import annotations
@@ -49,15 +55,16 @@ class RewardFn(ABC):
     """Base class for all reward functions."""
 
     @abstractmethod
-    def __call__(self, env, obs: dict) -> float:
+    def __call__(self, env, obs: dict, action=None) -> float:
         """
         Args:
-            env:  Live RoboCasa environment — gives access to simulator state,
-                  fixtures (env.cab), object bodies, contact data, etc.
-            obs:  Raw observation dict from env.step() / env.reset().
+            env:    Live RoboCasa environment — gives access to simulator state,
+                    fixtures (env.cab), object bodies, contact data, etc.
+            obs:    Raw observation dict from env.step() / env.reset().
+            action: The action taken (np.ndarray). Optional; used by GAIL reward.
 
         Returns:
-            Scalar reward (roughly in [0, 1] for all provided implementations).
+            Scalar reward. Reach component is delta-based (see module docstring).
         """
 
     # ------------------------------------------------------------------
@@ -84,6 +91,51 @@ class RewardFn(ABC):
         qpos = obs["robot0_gripper_qpos"]   # (2,) finger positions
         return bool(np.all(qpos > open_threshold))
 
+    def _delta_reach(self, curr_dist: float, is_grasped: bool) -> float:
+        """
+        Delta-based reach reward:
+          - Returns 0 when grasped (reach phase is over); also resets stored dist
+            so the next reach phase (if the object is dropped) starts fresh.
+          - Returns 0 on the very first call of an episode (no previous distance).
+          - Returns prev_dist - curr_dist otherwise:
+              > 0  when gripper is approaching the object
+              < 0  when gripper is moving away
+        Subclasses must initialise  self._prev_reach_dist = None  in __init__
+        and call  self._prev_reach_dist = None  in on_episode_reset().
+        """
+        if is_grasped:
+            self._prev_reach_dist = None
+            return 0.0
+        if self._prev_reach_dist is None:
+            self._prev_reach_dist = curr_dist
+            return 0.0
+        delta = self._prev_reach_dist - curr_dist   # positive = closer
+        self._prev_reach_dist = curr_dist
+        return delta
+
+    def _delta_transport(self, curr_dist: float, is_grasped: bool, inside_cab: bool) -> float:
+        """
+        Delta-based transport reward:
+          - Returns 0 when not grasped (transport phase not active); resets stored
+            dist so the next transport phase starts fresh if grasped again.
+          - Returns 0 when the object is already inside the cabinet.
+          - Returns 0 on the very first step the object is grasped (no previous dist).
+          - Returns prev_dist - curr_dist otherwise:
+              > 0  when the held object is moving closer to the cabinet
+              < 0  when the held object is moving away
+        Subclasses must initialise  self._prev_transport_dist = None  in __init__
+        and call  self._prev_transport_dist = None  in on_episode_reset().
+        """
+        if not is_grasped or inside_cab:
+            self._prev_transport_dist = None
+            return 0.0
+        if self._prev_transport_dist is None:
+            self._prev_transport_dist = curr_dist
+            return 0.0
+        delta = self._prev_transport_dist - curr_dist   # positive = closer to cabinet
+        self._prev_transport_dist = curr_dist
+        return delta
+
 
 # ---------------------------------------------------------------------------
 # 1. StagedPickPlaceReward (original, kept for backward compatibility)
@@ -93,23 +145,25 @@ class StagedPickPlaceReward(RewardFn):
     """
     Continuous 3-stage reward for pick-and-place tasks.
 
-        Stage 1 — Reach          [0.00, 0.50) : gripper moves toward target object
-        Stage 2 — Grasp+Transport [0.50, 1.00) : grasped object moves toward cabinet
-        Stage 3 — Inside cabinet  1.00         : object is inside the cabinet
+        Stage 1 — Reach      delta-based: positive when gripper approaches object,
+                             negative when retreating, 0 on first step.
+        Stage 2 — Transport  delta-based: positive when held object moves closer to
+                             cabinet, negative when moving away, 0 on first grasped step.
+        Stage 3 — Inside cabinet  1.0 (terminal).
 
     Note: success is detected by obj_inside_of(), not by dist-to-cab == 0.
     The cabinet position is only used as a directional target during transport.
-
-    Args:
-        reach_scale:     Sharpness of the exponential reach reward.
-        transport_scale: Sharpness of the exponential transport reward.
     """
 
-    def __init__(self, reach_scale: float = 3.0, transport_scale: float = 3.0):
-        self.reach_scale     = reach_scale
-        self.transport_scale = transport_scale
+    def __init__(self):
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
 
-    def __call__(self, env, obs: dict) -> float:
+    def on_episode_reset(self):
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
+
+    def __call__(self, env, obs: dict, action=None) -> float:
         obj_pos = obs["obj_pos"]
         eef_pos = obs["robot0_eef_pos"]
         cab_pos = np.array(env.cab.pos)
@@ -118,10 +172,17 @@ class StagedPickPlaceReward(RewardFn):
         is_grasped = OU.check_obj_grasped(env, "obj")
 
         if inside_cab:
+            self._prev_reach_dist     = None
+            self._prev_transport_dist = None
             return 1.0
         if is_grasped:
-            return 0.5 + 0.5 * self._exp_decay(self._dist(obj_pos, cab_pos), self.transport_scale)
-        return 0.5 * self._exp_decay(self._dist(eef_pos, obj_pos), self.reach_scale)
+            # reach phase is over — reset its state
+            self._delta_reach(self._dist(eef_pos, obj_pos), is_grasped=True)
+            return self._delta_transport(self._dist(obj_pos, cab_pos), is_grasped=True, inside_cab=False)
+
+        # Stage 1: delta-based reach reward
+        self._delta_transport(0.0, is_grasped=False, inside_cab=False)   # keep transport state reset
+        return self._delta_reach(self._dist(eef_pos, obj_pos), is_grasped=False)
 
 
 # ---------------------------------------------------------------------------
@@ -137,32 +198,33 @@ class ReleasingPickPlaceReward(RewardFn):
     settle. A policy trained without a release signal tends to hover the object
     in place without ever opening the gripper.
 
-        Stage 1 — Reach           [0.00, 0.25) : gripper → object
+        Stage 1 — Reach           delta-based: positive when approaching,
+                                  negative when retreating, 0 when grasped.
         Stage 2 — Grasp+Transport [0.25, 0.50) : grasped object → cabinet
         Stage 3 — Release         [0.50, 1.00) : gripper opens while obj is inside cabinet;
                                                   bonus for gripper moving away
         Stage 4 — Stabilised       1.00        : obj inside cabinet, gripper far away
 
     Args:
-        reach_scale:     Sharpness of reach reward decay.
-        transport_scale: Sharpness of transport reward decay.
-        retreat_scale:   Sharpness of retreat (gripper-away) reward decay.
-        open_threshold:  Gripper finger position above which we call the gripper "open".
+        retreat_scale:  Sharpness of retreat (gripper-away) reward decay.
+        open_threshold: Gripper finger position above which we call the gripper "open".
     """
 
     def __init__(
         self,
-        reach_scale:     float = 3.0,
-        transport_scale: float = 3.0,
-        retreat_scale:   float = 2.0,
-        open_threshold:  float = 0.03,
+        retreat_scale:  float = 2.0,
+        open_threshold: float = 0.03,
     ):
-        self.reach_scale     = reach_scale
-        self.transport_scale = transport_scale
         self.retreat_scale   = retreat_scale
         self.open_threshold  = open_threshold
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
 
-    def __call__(self, env, obs: dict) -> float:
+    def on_episode_reset(self):
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
+
+    def __call__(self, env, obs: dict, action=None) -> float:
         obj_pos = obs["obj_pos"]
         eef_pos = obs["robot0_eef_pos"]
         cab_pos = np.array(env.cab.pos)
@@ -174,24 +236,27 @@ class ReleasingPickPlaceReward(RewardFn):
 
         # Stage 4: object settled in cabinet, gripper has moved away
         if inside_cab and gripper_far:
+            self._prev_reach_dist     = None
+            self._prev_transport_dist = None
             return 1.0
 
         # Stage 3: object is inside cabinet — reward opening the gripper and retreating
         if inside_cab:
+            self._prev_transport_dist = None
             dist_eef_obj = self._dist(eef_pos, obj_pos)
             retreat_bonus = self._exp_decay(dist_eef_obj, self.retreat_scale)
-            # Opening the gripper gives the lower half of this band;
-            # moving away gives the upper half.
             if gripper_open:
                 return 0.75 + 0.25 * retreat_bonus
             return 0.50 + 0.25 * retreat_bonus
 
-        # Stage 2: object grasped, move it toward the cabinet
+        # Stage 2: object grasped — delta-based transport reward
         if is_grasped:
-            return 0.25 + 0.25 * self._exp_decay(self._dist(obj_pos, cab_pos), self.transport_scale)
+            self._delta_reach(self._dist(eef_pos, obj_pos), is_grasped=True)   # reset reach state
+            return self._delta_transport(self._dist(obj_pos, cab_pos), is_grasped=True, inside_cab=False)
 
-        # Stage 1: reach toward the object
-        return 0.25 * self._exp_decay(self._dist(eef_pos, obj_pos), self.reach_scale)
+        # Stage 1: delta-based reach reward
+        self._delta_transport(0.0, is_grasped=False, inside_cab=False)   # keep transport state reset
+        return self._delta_reach(self._dist(eef_pos, obj_pos), is_grasped=False)
 
 
 # ---------------------------------------------------------------------------
@@ -209,14 +274,16 @@ class DensePickPlaceReward(RewardFn):
 
     Components
     ──────────
-        reach     : exp decay of dist(gripper, object)                    always active
+        reach     : delta(dist(gripper, object)) — positive when approaching,
+                    negative when retreating, 0 when grasped or on first step.
         grasp     : +1 if object is grasped                               binary bonus
-        transport : exp decay of dist(object, cabinet) when grasped       active if grasped
+        transport : delta(dist(object, cabinet)) — positive when object moves toward
+                    cabinet, negative when moving away, 0 when not grasped or inside.
         inside    : +1 if object is inside cabinet                         binary bonus
         release   : exp decay of dist(gripper, object) when inside cabinet active if inside
         stabilise : +1 if inside cabinet AND gripper far                   binary bonus
 
-    Total reward is the weighted sum, normalised to roughly [0, 1].
+    Total reward is the weighted sum. Reach and transport components can be negative.
 
     Args:
         w_reach:      Weight for reach component.
@@ -225,56 +292,58 @@ class DensePickPlaceReward(RewardFn):
         w_inside:     Weight for inside-cabinet bonus.
         w_release:    Weight for release component.
         w_stabilise:  Weight for stabilisation bonus.
-        reach_scale:      Exponential scale for reach.
-        transport_scale:  Exponential scale for transport.
-        release_scale:    Exponential scale for release retreat.
+        release_scale: Exponential scale for release retreat.
     """
 
     def __init__(
         self,
-        w_reach:         float = 0.10,
-        w_grasp:         float = 0.15,
-        w_transport:     float = 0.25,
-        w_inside:        float = 0.20,
-        w_release:       float = 0.15,
-        w_stabilise:     float = 0.15,
-        reach_scale:     float = 3.0,
-        transport_scale: float = 3.0,
-        release_scale:   float = 2.0,
+        w_reach:      float = 0.10,
+        w_grasp:      float = 0.15,
+        w_transport:  float = 0.25,
+        w_inside:     float = 0.20,
+        w_release:    float = 0.15,
+        w_stabilise:  float = 0.15,
+        release_scale: float = 2.0,
     ):
-        total = w_reach + w_grasp + w_transport + w_inside + w_release + w_stabilise
-        # Normalise weights so maximum possible reward = 1.0
-        self.w_reach     = w_reach     / total
-        self.w_grasp     = w_grasp     / total
-        self.w_transport = w_transport / total
-        self.w_inside    = w_inside    / total
-        self.w_release   = w_release   / total
-        self.w_stabilise = w_stabilise / total
+        self.w_reach     = w_reach
+        self.w_grasp     = w_grasp
+        self.w_transport = w_transport
+        self.w_inside    = w_inside
+        self.w_release   = w_release
+        self.w_stabilise = w_stabilise
 
-        self.reach_scale     = reach_scale
-        self.transport_scale = transport_scale
-        self.release_scale   = release_scale
+        self.release_scale        = release_scale
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
 
-    def __call__(self, env, obs: dict) -> float:
+    def on_episode_reset(self):
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
+
+    def __call__(self, env, obs: dict, action=None) -> float:
         obj_pos = obs["obj_pos"]
         eef_pos = obs["robot0_eef_pos"]
         cab_pos = np.array(env.cab.pos)
 
-        inside_cab = OU.obj_inside_of(env, "obj", env.cab)
-        is_grasped = OU.check_obj_grasped(env, "obj")
+        inside_cab  = OU.obj_inside_of(env, "obj", env.cab)
+        is_grasped  = OU.check_obj_grasped(env, "obj")
         gripper_far = OU.gripper_obj_far(env, "obj")
 
-        r_reach     = self._exp_decay(self._dist(eef_pos, obj_pos), self.reach_scale)
-        r_grasp     = 1.0 if is_grasped else 0.0
-        r_transport = self._exp_decay(self._dist(obj_pos, cab_pos), self.transport_scale) if is_grasped else 0.0
+        # reach: delta-based, 0 when grasped
+        r_reach = self.w_reach * self._delta_reach(self._dist(eef_pos, obj_pos), is_grasped)
+        r_grasp = 1.0 if is_grasped else 0.0
+        # transport: delta-based, 0 when not grasped or already inside cabinet
+        r_transport = self.w_transport * self._delta_transport(
+            self._dist(obj_pos, cab_pos), is_grasped, inside_cab
+        )
         r_inside    = 1.0 if inside_cab else 0.0
         r_release   = self._exp_decay(self._dist(eef_pos, obj_pos), self.release_scale) if inside_cab else 0.0
         r_stabilise = 1.0 if (inside_cab and gripper_far) else 0.0
 
         return (
-            self.w_reach     * r_reach
+            r_reach
             + self.w_grasp     * r_grasp
-            + self.w_transport * r_transport
+            + r_transport
             + self.w_inside    * r_inside
             + self.w_release   * r_release
             + self.w_stabilise * r_stabilise
@@ -329,7 +398,7 @@ class BinaryMilestoneReward(RewardFn):
         self._gave_release   = False
         self._gave_stabilise = False
 
-    def __call__(self, env, obs: dict) -> float:
+    def __call__(self, env, obs: dict, action=None) -> float:
         # Reset milestone flags at the start of each episode.
         # We detect episode start by checking whether the object is back near
         # its spawn region (a rough heuristic). A cleaner approach is to hook
@@ -366,3 +435,101 @@ class BinaryMilestoneReward(RewardFn):
     def on_episode_reset(self):
         """Call this at the start of each episode to reset milestone tracking."""
         self._reset_flags()
+
+
+# ---------------------------------------------------------------------------
+# 5. ComposedPickPlaceReward
+# ---------------------------------------------------------------------------
+
+class ComposedPickPlaceReward(RewardFn):
+    """
+    Additive reward composed of three independent components.
+
+    Components
+    ──────────
+        r_reach     = delta(dist(gripper, object))
+                      Active only while not grasped. Positive when gripper approaches
+                      the object, negative when retreating, 0 on the first step of
+                      each reach phase and while the object is grasped.
+
+        r_lift      = w_lift  if dist(gripper, object) < near_threshold AND grasped
+                      Proximity-gated grasp bonus: the gripper must already be close
+                      before the bonus is available, preventing the policy from
+                      earning it by randomly closing fingers far from the object.
+
+        r_transport = exp(-transport_scale * dist(object, cabinet))   ∈ (0, 1]
+                      Active only while the object is grasped. Guides the held
+                      object toward the cabinet opening.
+
+        r_success   = success_bonus  if object is inside cabinet (one-time)
+                      Large terminal bonus for task completion.
+
+    Total reward each step:
+        r = w_reach * r_reach  +  r_lift  +  w_transport * r_transport  +  r_success
+
+    Note: r_reach can be negative, so the total reward is not strictly non-negative
+    during the reach phase.
+
+    Args:
+        w_reach:         Weight on the reach component (default 1.0).
+        w_transport:     Weight on the transport component (default 1.0).
+        w_lift:          Flat bonus for grasping while close (default 1.0).
+        transport_scale: Exponential decay rate for transport (default 3.0).
+        near_threshold:  Gripper must be within this distance (m) to earn r_lift
+                         (default 0.10).
+        success_bonus:   One-time reward when object enters cabinet (default 10.0).
+    """
+
+    def __init__(
+        self,
+        w_reach:        float = 1.0,
+        w_transport:    float = 1.0,
+        w_lift:         float = 1.0,
+        near_threshold: float = 0.10,
+        success_bonus:  float = 10.0,
+    ):
+        self.w_reach        = w_reach
+        self.w_transport    = w_transport
+        self.w_lift         = w_lift
+        self.near_threshold = near_threshold
+        self.success_bonus  = success_bonus
+        self._gave_success        = False
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
+
+    def on_episode_reset(self):
+        """Reset per-episode state at episode start."""
+        self._gave_success        = False
+        self._prev_reach_dist     = None
+        self._prev_transport_dist = None
+
+    def __call__(self, env, obs: dict, action=None) -> float:
+        eef_pos = obs["robot0_eef_pos"]
+        obj_pos = obs["obj_pos"]
+        cab_pos = np.array(env.cab.pos)
+
+        dist_reach = self._dist(eef_pos, obj_pos)
+        is_grasped = OU.check_obj_grasped(env, "obj")
+        inside_cab = OU.obj_inside_of(env, "obj", env.cab)
+
+        # r_reach: delta-based — 0 when grasped, positive/negative otherwise
+        r_reach = self.w_reach * self._delta_reach(dist_reach, is_grasped)
+
+        # r_lift: proximity-gated grasp bonus
+        r_lift = 0.0
+        if dist_reach < self.near_threshold and is_grasped:
+            r_lift = self.w_lift
+
+        # r_transport: delta-based — positive when object moves toward cabinet,
+        # negative when moving away, 0 when not grasped or already inside cabinet
+        r_transport = self.w_transport * self._delta_transport(
+            self._dist(obj_pos, cab_pos), is_grasped, inside_cab
+        )
+
+        # r_success: one-time terminal bonus
+        r_success = 0.0
+        if inside_cab and not self._gave_success:
+            r_success = self.success_bonus
+            self._gave_success = True
+
+        return r_reach + r_lift + r_transport + r_success
