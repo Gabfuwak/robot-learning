@@ -92,6 +92,15 @@ def main():
         "--set", nargs="*", default=[], metavar="KEY=VALUE",
         help="Override config fields, e.g. --set total_timesteps=500000 seed=1",
     )
+    parser.add_argument(
+        "--reward", default=None,
+        help=(
+            "Reward function to use. Available: "
+            "StagedPickPlaceReward, ReleasingPickPlaceReward, "
+            "DensePickPlaceReward, BinaryMilestoneReward, ComposedPickPlaceReward. "
+            "Defaults to StagedPickPlaceReward."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config, args.set)
@@ -101,14 +110,38 @@ def main():
         print(f"Overrides: {args.set}")
 
     from rl.trainer import TrainConfig, train
-    from rl.reward import StagedPickPlaceReward
+    from rl.reward import (
+        BinaryMilestoneReward,
+        ComposedPickPlaceReward,
+        DensePickPlaceReward,
+        ReleasingPickPlaceReward,
+        StagedPickPlaceReward,
+    )
+
+    REWARD_REGISTRY = {
+        "StagedPickPlaceReward":    StagedPickPlaceReward,
+        "ReleasingPickPlaceReward": ReleasingPickPlaceReward,
+        "DensePickPlaceReward":     DensePickPlaceReward,
+        "BinaryMilestoneReward":    BinaryMilestoneReward,
+        "ComposedPickPlaceReward":  ComposedPickPlaceReward,
+    }
+
+    reward_name = args.reward or cfg.pop("reward_fn", "StagedPickPlaceReward")
+    if reward_name not in REWARD_REGISTRY:
+        raise ValueError(
+            f"Unknown reward '{reward_name}'. "
+            f"Available: {list(REWARD_REGISTRY.keys())}"
+        )
+    reward_fn = REWARD_REGISTRY[reward_name]()
+    print(f"Reward  : {reward_name}")
 
     cfg.pop("trainer", None)
+    cfg.pop("reward_fn", None)
     seed = cfg.pop("seed", 42)
 
     train_cfg = TrainConfig(seed=seed, **{k: v for k, v in cfg.items()
                                           if k in TrainConfig.__dataclass_fields__})
-    train(train_cfg, reward_fn=StagedPickPlaceReward())
+    train(train_cfg, reward_fn=reward_fn)
 
 
 if __name__ == "__main__":
