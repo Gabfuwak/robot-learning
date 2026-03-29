@@ -126,7 +126,7 @@ class RoboCasaWrapper(gym.Env):
         raw_obs, _builtin_reward, done, info = self._env.step(action)
         self._last_raw_obs = raw_obs
 
-        reward = self._reward_fn(self._env, raw_obs)
+        reward = self._reward_fn(self._env, raw_obs, action=action)
 
         # robosuite sets done=True both on termination and horizon truncation
         truncated = bool(info.get("is_horizon_reached", False))
