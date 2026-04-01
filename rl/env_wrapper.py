@@ -32,6 +32,7 @@ Action space
 import cv2
 import gymnasium as gym
 import numpy as np
+import robocasa.utils.object_utils as OU
 from gymnasium import spaces
 
 from .reward import RewardFn
@@ -95,6 +96,8 @@ class RoboCasaWrapper(gym.Env):
         )
 
         self._last_raw_obs = raw
+        self._ever_grasped = False
+        self._ever_inside  = False
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -128,7 +131,8 @@ class RoboCasaWrapper(gym.Env):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         raw_obs = self._env.reset()
         self._last_raw_obs = raw_obs
-        # Allow reward functions to reset per-episode state (e.g. milestone flags)
+        self._ever_grasped = False
+        self._ever_inside  = False
         if hasattr(self._reward_fn, "on_episode_reset"):
             self._reward_fn.on_episode_reset()
         return self._build_obs(raw_obs), {}
@@ -142,6 +146,11 @@ class RoboCasaWrapper(gym.Env):
         self._last_raw_obs = raw_obs
 
         reward = self._reward_fn(self._env, raw_obs, action=action)
+
+        self._ever_grasped = self._ever_grasped or OU.check_obj_grasped(self._env, "obj")
+        self._ever_inside  = self._ever_inside  or OU.obj_inside_of(self._env, "obj", self._env.cab)
+        info["ever_grasped"] = self._ever_grasped
+        info["ever_inside"]  = self._ever_inside
 
         # robosuite sets done=True both on termination and horizon truncation
         truncated = bool(info.get("is_horizon_reached", False))

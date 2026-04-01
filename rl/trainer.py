@@ -24,6 +24,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .architecture import RoboCasaFeaturesExtractor
+from .callbacks import StageSuccessCallback
 from .env_wrapper import RoboCasaWrapper
 from .reward import RewardFn, StagedPickPlaceReward
 
@@ -199,6 +200,9 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
         **merged_algo_kwargs,
     )
 
+    # --- Eval env for stage-success callback (separate from EvalCallback's env) ---
+    stage_eval_env = DummyVecEnv([_make_env(cfg, reward_fn, rank=98, eval_mode=True)])
+
     # --- Callbacks ---
     save_freq = max(cfg.checkpoint_freq // cfg.n_envs, 1)
     callbacks = CallbackList([
@@ -215,6 +219,12 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
             eval_freq=save_freq,
             n_eval_episodes=cfg.n_eval_episodes,
             deterministic=True,
+            verbose=1,
+        ),
+        StageSuccessCallback(
+            eval_env=stage_eval_env,
+            eval_freq=save_freq,
+            n_eval_episodes=cfg.n_eval_episodes,
             verbose=1,
         ),
     ])
@@ -236,4 +246,5 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
 
     train_env.close()
     eval_env.close()
+    stage_eval_env.close()
     return model
