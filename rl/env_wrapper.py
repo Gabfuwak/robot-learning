@@ -49,6 +49,9 @@ class RoboCasaWrapper(gym.Env):
         image_size:      Height and width to resize each image to (square).
         state_keys:      Observation keys to concatenate into the "state" vector.
                          Defaults to the two aggregated keys.
+        max_spawn_dist:  If set, the object is teleported at reset so that
+                         dist(eef, obj) <= max_spawn_dist. Updated by
+                         CurriculumCallback during training.
     """
 
     DEFAULT_CAMERAS = [
@@ -67,6 +70,7 @@ class RoboCasaWrapper(gym.Env):
         image_size: int = 64,
         state_keys: list[str] | None = None,
         include_cab_obs: bool = False,
+        max_spawn_dist: float | None = None,
     ):
         super().__init__()
         self._env = env
@@ -76,6 +80,7 @@ class RoboCasaWrapper(gym.Env):
         self._image_size = image_size
         self._state_keys = state_keys if state_keys is not None else self.DEFAULT_STATE_KEYS
         self._include_cab_obs = include_cab_obs
+        self.max_spawn_dist = max_spawn_dist
 
         # Derive state dim from a throw-away reset so we don't hard-code 110.
         raw = self._env.reset()
@@ -100,6 +105,13 @@ class RoboCasaWrapper(gym.Env):
         self._ever_inside  = False
 
     # ------------------------------------------------------------------
+    # Curriculum interface
+    # ------------------------------------------------------------------
+
+    def set_max_spawn_dist(self, val: float) -> None:
+        self.max_spawn_dist = val
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
@@ -108,6 +120,28 @@ class RoboCasaWrapper(gym.Env):
         if self._include_cab_obs:
             parts.append(np.array(self._env.cab.pos, dtype=np.float32))
         return np.concatenate(parts)
+
+    def _teleport_obj(self, eef_pos: np.ndarray, obj_z: float) -> dict:
+        """
+        Teleport the task object to a uniformly random position within
+        self.max_spawn_dist of the EEF, at the same z as the natural spawn.
+        Returns fresh raw observations after the teleport.
+        """
+        angle = np.random.uniform(0, 2 * np.pi)
+        r     = np.random.uniform(0, self.max_spawn_dist)
+        new_pos = np.array([
+            eef_pos[0] + r * np.cos(angle),
+            eef_pos[1] + r * np.sin(angle),
+            obj_z,
+        ])
+
+        sim = self._env.sim
+        jnt_id    = sim.model.joint_name2id("obj_joint0")
+        qpos_addr = sim.model.jnt_qposadr[jnt_id]
+        sim.data.qpos[qpos_addr     : qpos_addr + 3] = new_pos
+        sim.data.qpos[qpos_addr + 3 : qpos_addr + 7] = [1.0, 0.0, 0.0, 0.0]
+        sim.forward()
+        return self._env._get_observations()
 
     def _extract_image(self, raw_obs: dict, cam: str) -> np.ndarray:
         """Returns a (3, H, W) uint8 array, right-side up."""
@@ -130,11 +164,18 @@ class RoboCasaWrapper(gym.Env):
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         raw_obs = self._env.reset()
-        self._last_raw_obs = raw_obs
         self._ever_grasped = False
         self._ever_inside  = False
         if hasattr(self._reward_fn, "on_episode_reset"):
             self._reward_fn.on_episode_reset()
+
+        if self.max_spawn_dist is not None:
+            eef_pos = raw_obs["robot0_eef_pos"]
+            obj_pos = raw_obs["obj_pos"]
+            if float(np.linalg.norm(eef_pos - obj_pos)) > self.max_spawn_dist:
+                raw_obs = self._teleport_obj(eef_pos, obj_pos[2])
+
+        self._last_raw_obs = raw_obs
         return self._build_obs(raw_obs), {}
 
     def step(self, action: np.ndarray):

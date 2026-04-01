@@ -11,6 +11,17 @@ Logged metrics
 ──────────────
   eval/stage_grasp_rate   — fraction of episodes where object was grasped ≥ once
   eval/success_rate       — fraction of episodes where object entered the cabinet
+
+CurriculumCallback
+──────────────────
+Implements a grasp-triggered spawn-distance curriculum. Every training episode
+that ends with a successful grasp increments the allowed spawn distance by
+`epsilon` (up to `max_dist`). All training envs are updated via env_method so
+it works with both DummyVecEnv and SubprocVecEnv.
+
+Logged metrics
+──────────────
+  curriculum/max_spawn_dist — current maximum allowed spawn distance (metres)
 """
 
 from __future__ import annotations
@@ -78,4 +89,38 @@ class StageSuccessCallback(BaseCallback):
                 f"  ({self.n_eval_episodes} eps)"
             )
 
+        return True
+
+
+class CurriculumCallback(BaseCallback):
+    """
+    Increments max_spawn_dist on all training envs by `epsilon` for every
+    training episode that ends with a successful grasp.
+
+    Args:
+        init_dist:  Starting max spawn distance (metres).
+        epsilon:    Distance added per grasped episode.
+        max_dist:   Hard cap on max spawn distance (metres).
+    """
+
+    def __init__(self, init_dist: float, epsilon: float, max_dist: float):
+        super().__init__()
+        self.current_dist = init_dist
+        self.epsilon      = epsilon
+        self.max_dist     = max_dist
+
+    def _on_training_start(self) -> None:
+        self.training_env.env_method("set_max_spawn_dist", self.current_dist)
+
+    def _on_step(self) -> bool:
+        changed = False
+        for done, info in zip(self.locals["dones"], self.locals["infos"]):
+            if done and info.get("ever_grasped", False):
+                self.current_dist = min(self.current_dist + self.epsilon, self.max_dist)
+                changed = True
+
+        if changed:
+            self.training_env.env_method("set_max_spawn_dist", self.current_dist)
+
+        self.logger.record("curriculum/max_spawn_dist", self.current_dist)
         return True

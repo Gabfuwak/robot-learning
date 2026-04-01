@@ -24,7 +24,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .architecture import RoboCasaFeaturesExtractor
-from .callbacks import StageSuccessCallback
+from .callbacks import CurriculumCallback, StageSuccessCallback
 from .env_wrapper import RoboCasaWrapper
 from .reward import RewardFn, StagedPickPlaceReward
 
@@ -73,6 +73,14 @@ class TrainConfig:
     ])
     image_size:       int             = 64
     include_cab_obs:  bool            = False   # append env.cab.pos (3 floats) to state for Stage 1
+
+    # --- Curriculum ---
+    # Set curriculum_init_dist > 0 to enable spawn-distance curriculum.
+    # max_spawn_dist grows by curriculum_epsilon for every training episode
+    # where the object is successfully grasped, up to curriculum_max_dist.
+    curriculum_init_dist: float       = 0.0     # 0 = disabled (no curriculum)
+    curriculum_epsilon:   float       = 0.002   # metres added per grasped episode
+    curriculum_max_dist:  float       = 0.50    # cap (metres); ~full counter range
 
     # --- Architecture ---
     state_embed_dim:  int             = 256
@@ -138,6 +146,7 @@ def _make_env(cfg: TrainConfig, reward_fn: RewardFn, rank: int, eval_mode: bool 
             camera_names=cfg.camera_names,
             image_size=cfg.image_size,
             include_cab_obs=cfg.include_cab_obs,
+            max_spawn_dist=cfg.curriculum_init_dist if cfg.curriculum_init_dist > 0 else None,
         )
         log_dir = os.path.join(cfg.log_dir, "envs", str(rank))
         os.makedirs(log_dir, exist_ok=True)
@@ -205,7 +214,7 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
 
     # --- Callbacks ---
     save_freq = max(cfg.checkpoint_freq // cfg.n_envs, 1)
-    callbacks = CallbackList([
+    cb_list = [
         CheckpointCallback(
             save_freq=save_freq,
             save_path=os.path.join(save_path, "checkpoints"),
@@ -227,7 +236,14 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
             n_eval_episodes=cfg.n_eval_episodes,
             verbose=1,
         ),
-    ])
+    ]
+    if cfg.curriculum_init_dist > 0:
+        cb_list.append(CurriculumCallback(
+            init_dist=cfg.curriculum_init_dist,
+            epsilon=cfg.curriculum_epsilon,
+            max_dist=cfg.curriculum_max_dist,
+        ))
+    callbacks = CallbackList(cb_list)
 
     print(f"Run:             {run_name}")
     print(f"Save path:       {save_path}")
@@ -235,6 +251,8 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
     print(f"Camera obs:      {cfg.use_camera_obs}")
     print(f"Reward fn:       {type(reward_fn).__name__}")
     print(f"n_envs:          {cfg.n_envs}")
+    if cfg.curriculum_init_dist > 0:
+        print(f"Curriculum:      init={cfg.curriculum_init_dist}m  eps={cfg.curriculum_epsilon}m  cap={cfg.curriculum_max_dist}m")
     print(f"Total timesteps: {cfg.total_timesteps:,}")
     print(f"PPO kwargs:      {merged_algo_kwargs}")
 

@@ -21,7 +21,16 @@ control_freq: 20
 
 # --- Observation ---
 use_camera_obs: false
+include_cab_obs: true
 image_size: 64
+
+# --- Curriculum ---
+# Set curriculum_init_dist > 0 to enable spawn-distance curriculum.
+# max_spawn_dist grows by curriculum_epsilon for every training episode
+# where the object is successfully grasped, up to curriculum_max_dist.
+curriculum_init_dist: 0.05   # metres; 0 = disabled
+curriculum_epsilon: 0.002    # metres added per grasped episode
+curriculum_max_dist: 0.50    # cap (metres)
 
 # --- Architecture ---
 state_embed_dim: 256
