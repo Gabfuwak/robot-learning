@@ -212,6 +212,17 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
     # --- Eval env for stage-success callback (separate from EvalCallback's env) ---
     stage_eval_env = DummyVecEnv([_make_env(cfg, reward_fn, rank=98, eval_mode=True)])
 
+    # --- Curriculum callback + curriculum-difficulty eval env (optional) ---
+    curriculum_cb       = None
+    curriculum_eval_env = None
+    if cfg.curriculum_init_dist > 0:
+        curriculum_cb = CurriculumCallback(
+            init_dist=cfg.curriculum_init_dist,
+            epsilon=cfg.curriculum_epsilon,
+            max_dist=cfg.curriculum_max_dist,
+        )
+        curriculum_eval_env = DummyVecEnv([_make_env(cfg, reward_fn, rank=97, eval_mode=True)])
+
     # --- Callbacks ---
     save_freq = max(cfg.checkpoint_freq // cfg.n_envs, 1)
     cb_list = [
@@ -234,15 +245,13 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
             eval_env=stage_eval_env,
             eval_freq=save_freq,
             n_eval_episodes=cfg.n_eval_episodes,
+            curriculum_callback=curriculum_cb,
+            curriculum_eval_env=curriculum_eval_env,
             verbose=1,
         ),
     ]
-    if cfg.curriculum_init_dist > 0:
-        cb_list.append(CurriculumCallback(
-            init_dist=cfg.curriculum_init_dist,
-            epsilon=cfg.curriculum_epsilon,
-            max_dist=cfg.curriculum_max_dist,
-        ))
+    if curriculum_cb is not None:
+        cb_list.append(curriculum_cb)
     callbacks = CallbackList(cb_list)
 
     print(f"Run:             {run_name}")
@@ -265,4 +274,6 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
     train_env.close()
     eval_env.close()
     stage_eval_env.close()
+    if curriculum_eval_env is not None:
+        curriculum_eval_env.close()
     return model

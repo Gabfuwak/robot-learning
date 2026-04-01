@@ -35,11 +35,16 @@ from stable_baselines3.common.vec_env import VecEnv
 class StageSuccessCallback(BaseCallback):
     """
     Args:
-        eval_env:        A DummyVecEnv wrapping a single RoboCasaWrapper eval env.
-        eval_freq:       Number of *environment steps* between evaluations.
-                         Pass cfg.checkpoint_freq to align with checkpoint saves.
-        n_eval_episodes: Number of episodes to roll out per evaluation.
-        verbose:         0 = silent, 1 = print results.
+        eval_env:             A DummyVecEnv wrapping a single RoboCasaWrapper eval env.
+        eval_freq:            Number of *environment steps* between evaluations.
+                              Pass cfg.checkpoint_freq to align with checkpoint saves.
+        n_eval_episodes:      Number of episodes to roll out per evaluation.
+        curriculum_callback:  Optional CurriculumCallback — if provided together with
+                              curriculum_eval_env, also logs eval/curriculum_success_rate
+                              on an env synced to the current curriculum difficulty.
+        curriculum_eval_env:  A DummyVecEnv with max_spawn_dist set, used for the
+                              curriculum-difficulty evaluation.
+        verbose:              0 = silent, 1 = print results.
     """
 
     def __init__(
@@ -47,12 +52,16 @@ class StageSuccessCallback(BaseCallback):
         eval_env: VecEnv,
         eval_freq: int,
         n_eval_episodes: int = 10,
+        curriculum_callback: "CurriculumCallback | None" = None,
+        curriculum_eval_env: "VecEnv | None" = None,
         verbose: int = 1,
     ):
         super().__init__(verbose)
-        self.eval_env        = eval_env
-        self.eval_freq       = eval_freq
-        self.n_eval_episodes = n_eval_episodes
+        self.eval_env             = eval_env
+        self.eval_freq            = eval_freq
+        self.n_eval_episodes      = n_eval_episodes
+        self.curriculum_callback  = curriculum_callback
+        self.curriculum_eval_env  = curriculum_eval_env
 
     def _on_step(self) -> bool:
         if self.n_calls % self.eval_freq != 0:
@@ -83,6 +92,31 @@ class StageSuccessCallback(BaseCallback):
 
         self.logger.record("eval/stage_grasp_rate", grasp_rate)
         self.logger.record("eval/success_rate",     success_rate)
+
+        if self.curriculum_callback is not None and self.curriculum_eval_env is not None:
+            curr_dist = self.curriculum_callback.current_dist
+            self.curriculum_eval_env.env_method("set_max_spawn_dist", curr_dist)
+
+            curr_grasp_count = curr_inside_count = 0
+            obs = self.curriculum_eval_env.reset()
+            ep_grasped = ep_inside = False
+            episodes_done = 0
+
+            while episodes_done < self.n_eval_episodes:
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, _, dones, infos = self.curriculum_eval_env.step(action)
+
+                ep_grasped = ep_grasped or infos[0].get("ever_grasped", False)
+                ep_inside  = ep_inside  or infos[0].get("ever_inside",  False)
+
+                if dones[0]:
+                    curr_grasp_count  += int(ep_grasped)
+                    curr_inside_count += int(ep_inside)
+                    ep_grasped = ep_inside = False
+                    episodes_done += 1
+
+            curriculum_success_rate = curr_inside_count / self.n_eval_episodes
+            self.logger.record("eval/curriculum_success_rate", curriculum_success_rate)
 
         if self.verbose:
             print(
