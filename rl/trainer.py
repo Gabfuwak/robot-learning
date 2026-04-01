@@ -71,6 +71,7 @@ class TrainConfig:
         "robot0_eye_in_hand",
     ])
     image_size:       int             = 64
+    include_cab_obs:  bool            = False   # append env.cab.pos (3 floats) to state for Stage 1
 
     # --- Architecture ---
     state_embed_dim:  int             = 256
@@ -135,6 +136,7 @@ def _make_env(cfg: TrainConfig, reward_fn: RewardFn, rank: int, eval_mode: bool 
             use_camera_obs=cfg.use_camera_obs,
             camera_names=cfg.camera_names,
             image_size=cfg.image_size,
+            include_cab_obs=cfg.include_cab_obs,
         )
         log_dir = os.path.join(cfg.log_dir, "envs", str(rank))
         os.makedirs(log_dir, exist_ok=True)

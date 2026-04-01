@@ -15,6 +15,8 @@ Observation space
 
 The state vector concatenates robot0_proprio-state (68) and object-state (42) by
 default, giving STATE_DIM=110 for PandaOmron on PickPlaceCounterToCabinet.
+When include_cab_obs=True, the cabinet position (3 floats from env.cab.pos) is
+appended, giving STATE_DIM=113. Use this for Stage 1 privileged-state PPO.
 
 Action space
 ────────────
@@ -63,6 +65,7 @@ class RoboCasaWrapper(gym.Env):
         camera_names: list[str] | None = None,
         image_size: int = 64,
         state_keys: list[str] | None = None,
+        include_cab_obs: bool = False,
     ):
         super().__init__()
         self._env = env
@@ -71,6 +74,7 @@ class RoboCasaWrapper(gym.Env):
         self._camera_names = camera_names if camera_names is not None else self.DEFAULT_CAMERAS
         self._image_size = image_size
         self._state_keys = state_keys if state_keys is not None else self.DEFAULT_STATE_KEYS
+        self._include_cab_obs = include_cab_obs
 
         # Derive state dim from a throw-away reset so we don't hard-code 110.
         raw = self._env.reset()
@@ -98,6 +102,8 @@ class RoboCasaWrapper(gym.Env):
 
     def _extract_state(self, raw_obs: dict) -> np.ndarray:
         parts = [raw_obs[k].astype(np.float32) for k in self._state_keys if k in raw_obs]
+        if self._include_cab_obs:
+            parts.append(np.array(self._env.cab.pos, dtype=np.float32))
         return np.concatenate(parts)
 
     def _extract_image(self, raw_obs: dict, cam: str) -> np.ndarray:
