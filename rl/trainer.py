@@ -79,7 +79,7 @@ class TrainConfig:
     # max_spawn_dist grows by curriculum_epsilon for every training episode
     # where the object is successfully grasped, up to curriculum_max_dist.
     curriculum_init_dist: float       = 0.0     # 0 = disabled (no curriculum)
-    curriculum_epsilon:   float       = 0.002   # metres added per grasped episode
+    curriculum_epsilon:   float       = 0.05    # scaling factor: delta = epsilon * current_dist / n_envs
     curriculum_max_dist:  float       = 0.50    # cap (metres); ~full counter range
 
     # --- Architecture ---

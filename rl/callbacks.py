@@ -16,8 +16,10 @@ CurriculumCallback
 ──────────────────
 Implements a grasp-triggered spawn-distance curriculum. Every training episode
 that ends with a successful grasp increments the allowed spawn distance by
-`epsilon` (up to `max_dist`). All training envs are updated via env_method so
-it works with both DummyVecEnv and SubprocVecEnv.
+`epsilon * (current_dist / max_dist) / n_envs` (up to `max_dist`). The
+normalized factor is 0 at init_dist and 1 at max_dist, so harder grasps earn
+more progress; dividing by `n_envs` keeps progression rate independent of
+parallelism.
 
 Logged metrics
 ──────────────
@@ -94,12 +96,14 @@ class StageSuccessCallback(BaseCallback):
 
 class CurriculumCallback(BaseCallback):
     """
-    Increments max_spawn_dist on all training envs by `epsilon` for every
-    training episode that ends with a successful grasp.
+    Increments max_spawn_dist on all training envs by
+    `epsilon * (current_dist / max_dist) / n_envs` for every training episode
+    that ends with a successful grasp.
 
     Args:
         init_dist:  Starting max spawn distance (metres).
-        epsilon:    Distance added per grasped episode.
+        epsilon:    Max increment per grasped episode at full difficulty, single env
+                    (dimensionless; typical range 0.01–0.2).
         max_dist:   Hard cap on max spawn distance (metres).
     """
 
@@ -114,9 +118,11 @@ class CurriculumCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         changed = False
+        n_envs = self.training_env.num_envs
         for done, info in zip(self.locals["dones"], self.locals["infos"]):
             if done and info.get("ever_grasped", False):
-                self.current_dist = min(self.current_dist + self.epsilon, self.max_dist)
+                delta = self.epsilon * (self.current_dist / self.max_dist) / n_envs
+                self.current_dist = min(self.current_dist + delta, self.max_dist)
                 changed = True
 
         if changed:
