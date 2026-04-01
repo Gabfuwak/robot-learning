@@ -155,13 +155,16 @@ class StagedPickPlaceReward(RewardFn):
     The cabinet position is only used as a directional target during transport.
     """
 
-    def __init__(self):
+    def __init__(self, grasp_bonus: float = 0.1):
+        self.grasp_bonus          = grasp_bonus
         self._prev_reach_dist     = None
         self._prev_transport_dist = None
+        self._gave_grasp          = False
 
     def on_episode_reset(self):
         self._prev_reach_dist     = None
         self._prev_transport_dist = None
+        self._gave_grasp          = False
 
     def __call__(self, env, obs: dict, action=None) -> float:
         obj_pos = obs["obj_pos"]
@@ -178,7 +181,11 @@ class StagedPickPlaceReward(RewardFn):
         if is_grasped:
             # reach phase is over — reset its state
             self._delta_reach(self._dist(eef_pos, obj_pos), is_grasped=True)
-            return self._delta_transport(self._dist(obj_pos, cab_pos), is_grasped=True, inside_cab=False)
+            r = self._delta_transport(self._dist(obj_pos, cab_pos), is_grasped=True, inside_cab=False)
+            if not self._gave_grasp:
+                r += self.grasp_bonus
+                self._gave_grasp = True
+            return r
 
         # Stage 1: delta-based reach reward
         self._delta_transport(0.0, is_grasped=False, inside_cab=False)   # keep transport state reset

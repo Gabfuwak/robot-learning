@@ -42,7 +42,7 @@ _PPO_DEFAULTS: dict[str, Any] = dict(
     batch_size=64,
     n_epochs=10,
     clip_range=0.2,
-    ent_coef=0.0,
+    ent_coef=0.01,
     gae_lambda=0.95,
 )
 
