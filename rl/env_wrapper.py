@@ -128,7 +128,7 @@ class RoboCasaWrapper(gym.Env):
         Returns fresh raw observations after the teleport.
         """
         angle = np.random.uniform(0, 2 * np.pi)
-        r     = np.random.uniform(0, self.max_spawn_dist)
+        r     = np.sqrt(np.random.uniform(0, 1)) * self.max_spawn_dist
         new_pos = np.array([
             eef_pos[0] + r * np.cos(angle),
             eef_pos[1] + r * np.sin(angle),
