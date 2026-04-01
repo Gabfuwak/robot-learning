@@ -1,50 +1,12 @@
 """
-Generalised RL trainer for RoboCasa environments.
-
-Supports any SB3 algorithm (SAC, PPO, TD3, DDPG, A2C, …) via an algorithm
-registry.  Algorithm-specific hyperparameters are passed through algo_kwargs
-so the config stays clean regardless of which algorithm is chosen.
+PPO trainer for RoboCasa environments using Stable Baselines 3.
 
 Entry point
 ───────────
     from rl import TrainConfig, train
     from rl.reward import StagedPickPlaceReward
 
-    # SAC (default)
     train(TrainConfig(), reward_fn=StagedPickPlaceReward())
-
-    # PPO — override only the params that differ
-    train(
-        TrainConfig(
-            algo="PPO",
-            n_envs=8,              # PPO benefits from parallel envs
-            algo_kwargs=dict(
-                n_steps=2048,
-                clip_range=0.2,
-                ent_coef=0.01,
-            ),
-        ),
-        reward_fn=StagedPickPlaceReward(),
-    )
-
-    # TD3
-    train(
-        TrainConfig(
-            algo="TD3",
-            algo_kwargs=dict(
-                buffer_size=300_000,
-                learning_starts=10_000,
-                action_noise=None,  # or OrnsteinUhlenbeckActionNoise(...)
-            ),
-        ),
-    )
-
-Algorithm registry
-──────────────────
-    Add a new algorithm with:
-        from rl.trainer import ALGO_REGISTRY
-        from stable_baselines3 import MyAlgo
-        ALGO_REGISTRY["MyAlgo"] = MyAlgo
 """
 
 from __future__ import annotations
@@ -56,8 +18,7 @@ from typing import Any, Type
 
 from robocasa.environments.kitchen.atomic.kitchen_pick_place import PickPlaceCounterToCabinet
 from robosuite.controllers import load_composite_controller_config
-from stable_baselines3 import A2C, DDPG, PPO, SAC, TD3
-from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
@@ -68,74 +29,21 @@ from .reward import RewardFn, StagedPickPlaceReward
 
 
 # ---------------------------------------------------------------------------
-# Registries — extend these to add new envs or algorithms
+# Registry
 # ---------------------------------------------------------------------------
 
 ENV_REGISTRY: dict[str, Type] = {
     "PickPlaceCounterToCabinet": PickPlaceCounterToCabinet,
 }
 
-ALGO_REGISTRY: dict[str, Type[BaseAlgorithm]] = {
-    "SAC":  SAC,
-    "TD3":  TD3,
-    "DDPG": DDPG,
-    "PPO":  PPO,
-    "A2C":  A2C,
-}
-
-# MultiInputPolicy lives under each algorithm's own sub-module in SB3.
-_MULTI_INPUT_POLICY: dict[str, str] = {
-    "SAC":  "MultiInputPolicy",
-    "TD3":  "MultiInputPolicy",
-    "DDPG": "MultiInputPolicy",
-    "PPO":  "MultiInputPolicy",
-    "A2C":  "MultiInputPolicy",
-}
-
-# Default algo_kwargs for each algorithm.
-# Users override these via TrainConfig.algo_kwargs.
-_ALGO_DEFAULTS: dict[str, dict[str, Any]] = {
-    "SAC": dict(
-        buffer_size=300_000,
-        batch_size=256,
-        tau=0.005,
-        ent_coef="auto",
-        learning_starts=10_000,
-        train_freq=1,
-        gradient_steps=1,
-    ),
-    "TD3": dict(
-        buffer_size=300_000,
-        batch_size=256,
-        tau=0.005,
-        learning_starts=10_000,
-        train_freq=1,
-        gradient_steps=1,
-        action_noise=None,
-    ),
-    "DDPG": dict(
-        buffer_size=300_000,
-        batch_size=256,
-        tau=0.005,
-        learning_starts=10_000,
-        train_freq=1,
-        gradient_steps=1,
-        action_noise=None,
-    ),
-    "PPO": dict(
-        n_steps=2048,
-        batch_size=64,
-        n_epochs=10,
-        clip_range=0.2,
-        ent_coef=0.0,
-        gae_lambda=0.95,
-    ),
-    "A2C": dict(
-        n_steps=5,
-        ent_coef=0.0,
-        gae_lambda=1.0,
-    ),
-}
+_PPO_DEFAULTS: dict[str, Any] = dict(
+    n_steps=2048,
+    batch_size=64,
+    n_epochs=10,
+    clip_range=0.2,
+    ent_coef=0.0,
+    gae_lambda=0.95,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -145,10 +53,8 @@ _ALGO_DEFAULTS: dict[str, dict[str, Any]] = {
 @dataclass
 class TrainConfig:
     # --- Algorithm ---
-    algo:             str             = "SAC"
     algo_kwargs:      dict[str, Any]  = field(default_factory=dict)
-    # algo_kwargs are merged on top of _ALGO_DEFAULTS[algo], so you only need
-    # to specify values that differ from the defaults shown above.
+    # Merged on top of _PPO_DEFAULTS — only specify values that differ.
 
     # --- Environment ---
     env_name:         str             = "PickPlaceCounterToCabinet"
@@ -178,8 +84,7 @@ class TrainConfig:
     gamma:            float           = 0.99
 
     # --- Parallelism ---
-    # PPO/A2C benefit from n_envs > 1; off-policy algos typically use 1.
-    n_envs:           int             = 1
+    n_envs:           int             = 16   # PPO benefits from parallel collection
 
     # --- Logging / saving ---
     run_name:         str             = ""        # auto-generated if empty
@@ -241,25 +146,21 @@ def _make_env(cfg: TrainConfig, reward_fn: RewardFn, rank: int, eval_mode: bool 
 # Main training function
 # ---------------------------------------------------------------------------
 
-def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> BaseAlgorithm:
+def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
     """
-    Build environments, instantiate the chosen algorithm, and run training.
+    Build environments, instantiate PPO, and run training.
 
     Args:
         cfg:       Training configuration.
         reward_fn: Reward function. Defaults to StagedPickPlaceReward.
 
     Returns:
-        The trained SB3 model.
+        The trained SB3 PPO model.
     """
-    if cfg.algo not in ALGO_REGISTRY:
-        raise ValueError(f"Unknown algo '{cfg.algo}'. Available: {list(ALGO_REGISTRY.keys())}")
-
     if reward_fn is None:
         reward_fn = StagedPickPlaceReward()
 
-    algo_cls  = ALGO_REGISTRY[cfg.algo]
-    run_name  = cfg.run_name or f"{cfg.env_name}_{cfg.algo.lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name  = cfg.run_name or f"{cfg.env_name}_ppo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_path = os.path.join(cfg.save_dir, run_name)
     os.makedirs(save_path, exist_ok=True)
 
@@ -280,12 +181,12 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> BaseAlgorithm:
         net_arch=cfg.net_arch,
     )
 
-    # --- Merge algo-specific kwargs: defaults ← user overrides ---
-    merged_algo_kwargs = {**_ALGO_DEFAULTS.get(cfg.algo, {}), **cfg.algo_kwargs}
+    # --- Merge PPO kwargs: defaults ← user overrides ---
+    merged_algo_kwargs = {**_PPO_DEFAULTS, **cfg.algo_kwargs}
 
     # --- Instantiate model ---
-    model = algo_cls(
-        policy=_MULTI_INPUT_POLICY[cfg.algo],
+    model = PPO(
+        policy="MultiInputPolicy",
         env=train_env,
         learning_rate=cfg.learning_rate,
         gamma=cfg.gamma,
@@ -302,7 +203,7 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> BaseAlgorithm:
         CheckpointCallback(
             save_freq=save_freq,
             save_path=os.path.join(save_path, "checkpoints"),
-            name_prefix=cfg.algo.lower(),
+            name_prefix="ppo",
             verbose=1,
         ),
         EvalCallback(
@@ -316,7 +217,6 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> BaseAlgorithm:
         ),
     ])
 
-    print(f"Algorithm:       {cfg.algo}")
     print(f"Run:             {run_name}")
     print(f"Save path:       {save_path}")
     print(f"TensorBoard:     tensorboard --logdir {os.path.join(cfg.log_dir, 'tb')}")
@@ -324,11 +224,11 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> BaseAlgorithm:
     print(f"Reward fn:       {type(reward_fn).__name__}")
     print(f"n_envs:          {cfg.n_envs}")
     print(f"Total timesteps: {cfg.total_timesteps:,}")
-    print(f"Algo kwargs:     {merged_algo_kwargs}")
+    print(f"PPO kwargs:      {merged_algo_kwargs}")
 
     model.learn(total_timesteps=cfg.total_timesteps, callback=callbacks, progress_bar=True)
 
-    final_path = os.path.join(save_path, f"{cfg.algo.lower()}_final")
+    final_path = os.path.join(save_path, "ppo_final")
     model.save(final_path)
     print(f"Model saved to {final_path}.zip")
 

@@ -2,19 +2,15 @@
 Training entry point.
 
 Loads a YAML config, optionally overrides individual fields from the CLI,
-then dispatches to the SB3 trainer.
+then dispatches to the SB3 PPO trainer.
 
 Usage
 ─────
-    # SB3-based SAC
-    python scripts/train.py --config config/sac.yaml
-
-    # SB3-based PPO with 8 parallel envs
     python scripts/train.py --config config/ppo_sb3.yaml
 
     # Override any field on the fly (dot notation for nested algo_kwargs)
-    python scripts/train.py --config config/sac.yaml \\
-        --set total_timesteps=500000 seed=1 algo_kwargs.batch_size=128
+    python scripts/train.py --config config/ppo_sb3.yaml \\
+        --set total_timesteps=2000000 seed=1 algo_kwargs.n_steps=4096
 """
 
 from __future__ import annotations
@@ -119,11 +115,11 @@ def main():
     )
 
     REWARD_REGISTRY = {
-        "StagedPickPlaceReward":    StagedPickPlaceReward,
-        "ReleasingPickPlaceReward": ReleasingPickPlaceReward,
-        "DensePickPlaceReward":     DensePickPlaceReward,
-        "BinaryMilestoneReward":    BinaryMilestoneReward,
-        "ComposedPickPlaceReward":  ComposedPickPlaceReward,
+        "StagedPickPlaceReward":     StagedPickPlaceReward,
+        "ReleasingPickPlaceReward":  ReleasingPickPlaceReward,
+        "DensePickPlaceReward":      DensePickPlaceReward,
+        "BinaryMilestoneReward":     BinaryMilestoneReward,
+        "ComposedPickPlaceReward":   ComposedPickPlaceReward,
     }
 
     reward_name = args.reward or cfg.pop("reward_fn", "StagedPickPlaceReward")
@@ -137,6 +133,7 @@ def main():
 
     cfg.pop("trainer", None)
     cfg.pop("reward_fn", None)
+    cfg.pop("algo", None)
     seed = cfg.pop("seed", 42)
 
     train_cfg = TrainConfig(seed=seed, **{k: v for k, v in cfg.items()

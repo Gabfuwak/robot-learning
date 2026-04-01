@@ -1,8 +1,9 @@
-# PPO training configuration (SB3 backend)
-trainer: sb3
+# PPO training configuration (Stable Baselines 3)
+
+# --- Reward ---
+reward_fn: StagedPickPlaceReward
 
 # --- Algorithm ---
-algo: PPO
 algo_kwargs:
   n_steps: 2048
   batch_size: 64
@@ -32,7 +33,7 @@ seed: 42
 total_timesteps: 1000000
 learning_rate: 0.0003
 gamma: 0.99
-n_envs: 8            # PPO benefits from parallel collection
+n_envs: 4             # each RoboCasa/MuJoCo instance is ~1-2 GB; 16 OOMs on 31 GB RAM
 
 # --- Logging / saving ---
 save_dir: runs

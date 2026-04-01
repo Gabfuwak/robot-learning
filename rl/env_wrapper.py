@@ -18,8 +18,13 @@ default, giving STATE_DIM=110 for PandaOmron on PickPlaceCounterToCabinet.
 
 Action space
 ────────────
-  Box(-1, 1, shape=(12,), dtype=float32)  — full 12-dim action as described in
-  obs_action_space.md.
+  Box(-1, 1, shape=(7,), dtype=float32)
+    [0:3] EEF position delta
+    [3:6] EEF rotation delta
+    [6]   Gripper command (-1=open, +1=close)
+
+  Dims 7-11 (mobile base velocity + padding) are always zero in human demos and
+  are padded internally before passing to the raw environment.
 """
 
 import cv2
@@ -82,7 +87,7 @@ class RoboCasaWrapper(gym.Env):
 
         self.observation_space = spaces.Dict(obs_spaces)
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(12,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(7,), dtype=np.float32
         )
 
         self._last_raw_obs = raw
@@ -123,7 +128,11 @@ class RoboCasaWrapper(gym.Env):
         return self._build_obs(raw_obs), {}
 
     def step(self, action: np.ndarray):
-        raw_obs, _builtin_reward, done, info = self._env.step(action)
+        # Pad 7-dim policy action to the 12-dim raw env action.
+        # Dims 7-11 (mobile base velocity + padding) remain zero.
+        full_action = np.zeros(12, dtype=np.float32)
+        full_action[:7] = action
+        raw_obs, _builtin_reward, done, info = self._env.step(full_action)
         self._last_raw_obs = raw_obs
 
         reward = self._reward_fn(self._env, raw_obs, action=action)
