@@ -119,10 +119,12 @@ def main():
         ComposedPickPlaceReward,
         DensePickPlaceReward,
         ReleasingPickPlaceReward,
+        SimplePickPlaceReward,
         StagedPickPlaceReward,
     )
 
     REWARD_REGISTRY = {
+        "SimplePickPlaceReward":     SimplePickPlaceReward,
         "StagedPickPlaceReward":     StagedPickPlaceReward,
         "ReleasingPickPlaceReward":  ReleasingPickPlaceReward,
         "DensePickPlaceReward":      DensePickPlaceReward,

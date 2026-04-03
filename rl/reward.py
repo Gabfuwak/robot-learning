@@ -9,6 +9,7 @@ Implement new reward functions by subclassing RewardFn.
 
 Available reward functions
 ──────────────────────────
+    SimplePickPlaceReward       — exp-decay reach + transport shaping, one-time bonuses, no deltas
     StagedPickPlaceReward       — 3-stage: reach → grasp+transport → inside cabinet
     ReleasingPickPlaceReward    — 4-stage: adds an explicit release stage after placement
     DensePickPlaceReward        — fully dense, all signals combined without hard stage gates
@@ -138,7 +139,81 @@ class RewardFn(ABC):
 
 
 # ---------------------------------------------------------------------------
-# 1. StagedPickPlaceReward (original, kept for backward compatibility)
+# 1. SimplePickPlaceReward
+# ---------------------------------------------------------------------------
+
+class SimplePickPlaceReward(RewardFn):
+    """
+    Minimal exp-decay reward. No delta-based signals, no stage state beyond two flags.
+
+        While not grasped : w_reach * exp(-reach_scale * dist(eef, obj))
+        On first grasp    : +grasp_bonus  (one-time)
+        While grasped     : w_transport * exp(-transport_scale * dist(obj, cabinet))
+        On first success  : +success_bonus  (one-time)
+
+    Reach and transport are mutually exclusive (reach active only before grasp,
+    transport active only while holding). Both are always strictly positive, so
+    the policy always has a gradient direction — unlike delta-based rewards which
+    average to zero for a stuck policy.
+
+    Args:
+        reach_scale:     Exponential decay rate for reach (higher = steeper gradient near obj).
+        transport_scale: Exponential decay rate for transport (higher = steeper gradient near cab).
+        w_reach:         Per-step weight on reach shaping.
+        w_transport:     Per-step weight on transport shaping.
+        grasp_bonus:     One-time bonus awarded on the first successful grasp.
+        success_bonus:   One-time bonus awarded when the object enters the cabinet.
+    """
+
+    def __init__(
+        self,
+        reach_scale:     float = 3.0,
+        transport_scale: float = 2.0,
+        w_reach:         float = 0.3,
+        w_transport:     float = 0.5,
+        grasp_bonus:     float = 0.5,
+        success_bonus:   float = 5.0,
+    ):
+        self.reach_scale     = reach_scale
+        self.transport_scale = transport_scale
+        self.w_reach         = w_reach
+        self.w_transport     = w_transport
+        self.grasp_bonus     = grasp_bonus
+        self.success_bonus   = success_bonus
+        self._gave_grasp   = False
+        self._gave_success = False
+
+    def on_episode_reset(self):
+        self._gave_grasp   = False
+        self._gave_success = False
+
+    def __call__(self, env, obs: dict, action=None) -> float:
+        eef_pos = obs["robot0_eef_pos"]
+        obj_pos = obs["obj_pos"]
+        cab_pos = np.array(env.cab.pos)
+
+        is_grasped = OU.check_obj_grasped(env, "obj")
+        inside_cab = OU.obj_inside_of(env, "obj", env.cab)
+
+        if inside_cab:
+            r = 0.0
+            if not self._gave_success:
+                r += self.success_bonus
+                self._gave_success = True
+            return r
+
+        if is_grasped:
+            r = self.w_transport * self._exp_decay(self._dist(obj_pos, cab_pos), self.transport_scale)
+            if not self._gave_grasp:
+                r += self.grasp_bonus
+                self._gave_grasp = True
+            return r
+
+        return self.w_reach * self._exp_decay(self._dist(eef_pos, obj_pos), self.reach_scale)
+
+
+# ---------------------------------------------------------------------------
+# 2. StagedPickPlaceReward
 # ---------------------------------------------------------------------------
 
 class StagedPickPlaceReward(RewardFn):

@@ -1,7 +1,7 @@
 # PPO training configuration (Stable Baselines 3)
 
 # --- Reward ---
-reward_fn: StagedPickPlaceReward
+reward_fn: SimplePickPlaceReward
 
 # --- Algorithm ---
 algo_kwargs:
