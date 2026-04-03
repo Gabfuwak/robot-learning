@@ -49,3 +49,8 @@ save_dir: runs
 log_dir: /tmp/rl_logs
 checkpoint_freq: 50000
 n_eval_episodes: 5
+
+# --- Weights & Biases ---
+wandb_enabled: false
+wandb_entity: gbwk-proj
+wandb_project: robocasa-pickplace

@@ -93,6 +93,10 @@ def main():
         help="Path to a checkpoint .zip to resume training from.",
     )
     parser.add_argument(
+        "--wandb", action="store_true",
+        help="Enable Weights & Biases logging.",
+    )
+    parser.add_argument(
         "--reward", default=None,
         help=(
             "Reward function to use. Available: "
@@ -139,6 +143,9 @@ def main():
     cfg.pop("reward_fn", None)
     cfg.pop("algo", None)
     seed = cfg.pop("seed", 42)
+
+    if args.wandb:
+        cfg["wandb_enabled"] = True
 
     train_cfg = TrainConfig(seed=seed, **{k: v for k, v in cfg.items()
                                           if k in TrainConfig.__dataclass_fields__})

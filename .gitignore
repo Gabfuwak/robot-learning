@@ -19,3 +19,6 @@ deps/robosuite/robosuite/macros_private.py
 
 # Log directories of rl training runs
 runs/
+
+# Weights & Biases local run cache
+wandb/

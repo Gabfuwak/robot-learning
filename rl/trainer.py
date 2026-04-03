@@ -11,6 +11,7 @@ Entry point
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from dataclasses import dataclass, field
@@ -104,6 +105,11 @@ class TrainConfig:
     checkpoint_freq:  int             = 50_000
     n_eval_episodes:  int             = 5
 
+    # --- Weights & Biases ---
+    wandb_enabled:    bool            = False
+    wandb_entity:     str             = "gbwk-proj"
+    wandb_project:    str             = "robocasa-pickplace"
+
 
 # ---------------------------------------------------------------------------
 # Env factory
@@ -179,6 +185,39 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None, resume_from: str 
     run_name  = cfg.run_name or f"{cfg.env_name}_ppo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_path = os.path.join(cfg.save_dir, run_name)
     os.makedirs(save_path, exist_ok=True)
+
+    # --- Weights & Biases ---
+    _wandb_run = None
+    if cfg.wandb_enabled:
+        import wandb
+
+        # Re-attach to existing run if resuming
+        _wandb_run_id = None
+        if resume_from:
+            _orig_run_dir = os.path.dirname(os.path.dirname(os.path.abspath(resume_from)))
+            _rid_file = os.path.join(_orig_run_dir, "wandb_run_id.txt")
+            if os.path.exists(_rid_file):
+                with open(_rid_file) as _f:
+                    _wandb_run_id = _f.read().strip()
+
+        _cfg_dict = {
+            k: v for k, v in dataclasses.asdict(cfg).items()
+            if not k.startswith("wandb_")
+        }
+        _cfg_dict["reward_fn"] = type(reward_fn).__name__
+
+        _wandb_run = wandb.init(
+            entity=cfg.wandb_entity,
+            project=cfg.wandb_project,
+            name=run_name,
+            config=_cfg_dict,
+            id=_wandb_run_id,
+            resume="must" if _wandb_run_id else None,
+            sync_tensorboard=True,
+        )
+        with open(os.path.join(save_path, "wandb_run_id.txt"), "w") as _f:
+            _f.write(_wandb_run.id)
+        print(f"W&B run:         {_wandb_run.url}")
 
     # --- Vectorised training env ---
     env_fns   = [_make_env(cfg, reward_fn, rank=i) for i in range(cfg.n_envs)]
@@ -309,4 +348,6 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None, resume_from: str 
     stage_eval_env.close()
     if curriculum_eval_env is not None:
         curriculum_eval_env.close()
+    if _wandb_run is not None:
+        _wandb_run.finish()
     return model
