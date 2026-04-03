@@ -26,7 +26,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .architecture import RoboCasaFeaturesExtractor
-from .callbacks import CurriculumCallback, StageSuccessCallback
+from .callbacks import CurriculumCallback, RollingSuccessCallback, StageSuccessCallback
 from .env_wrapper import RoboCasaWrapper
 from .reward import RewardFn, StagedPickPlaceReward
 
@@ -293,6 +293,7 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None, resume_from: str 
     # --- Callbacks ---
     save_freq = max(cfg.checkpoint_freq // cfg.n_envs, 1)
     cb_list = [
+        RollingSuccessCallback(window=100),
         CheckpointCallback(
             save_freq=save_freq,
             save_path=os.path.join(save_path, "checkpoints"),

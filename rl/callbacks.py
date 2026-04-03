@@ -1,6 +1,16 @@
 """
 Custom SB3 callbacks for RoboCasa training.
 
+RollingSuccessCallback
+──────────────────────
+Tracks a rolling window of completed training episodes and logs live grasp/success
+rates without running a separate eval loop.
+
+Logged metrics
+──────────────
+  train/rolling_grasp_rate   — grasp rate over last `window` training episodes
+  train/rolling_success_rate — success rate over last `window` training episodes
+
 StageSuccessCallback
 ────────────────────
 Evaluates the policy every `eval_freq` steps and logs per-stage success rates
@@ -9,8 +19,10 @@ using a dedicated DummyVecEnv so it doesn't interfere with EvalCallback.
 
 Logged metrics
 ──────────────
-  eval/stage_grasp_rate   — fraction of episodes where object was grasped ≥ once
-  eval/success_rate       — fraction of episodes where object entered the cabinet
+  eval/stage_grasp_rate          — fraction of episodes where object was grasped ≥ once
+  eval/success_rate              — fraction of episodes where object entered the cabinet
+  eval/curriculum_grasp_rate    — grasp rate at current curriculum difficulty
+  eval/curriculum_success_rate  — success rate at current curriculum difficulty
 
 CurriculumCallback
 ──────────────────
@@ -28,8 +40,36 @@ Logged metrics
 
 from __future__ import annotations
 
+from collections import deque
+
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
+
+
+class RollingSuccessCallback(BaseCallback):
+    """
+    Logs rolling grasp and success rates over training episodes (no eval loop).
+
+    Args:
+        window: Number of completed episodes to average over.
+    """
+
+    def __init__(self, window: int = 100, verbose: int = 0):
+        super().__init__(verbose)
+        self._grasps   = deque(maxlen=window)
+        self._successes = deque(maxlen=window)
+
+    def _on_step(self) -> bool:
+        for done, info in zip(self.locals["dones"], self.locals["infos"]):
+            if done:
+                self._grasps.append(int(info.get("ever_grasped", False)))
+                self._successes.append(int(info.get("ever_inside",  False)))
+
+        if self._grasps:
+            self.logger.record("train/rolling_grasp_rate",   sum(self._grasps)    / len(self._grasps))
+            self.logger.record("train/rolling_success_rate", sum(self._successes) / len(self._successes))
+
+        return True
 
 
 class StageSuccessCallback(BaseCallback):
@@ -115,8 +155,8 @@ class StageSuccessCallback(BaseCallback):
                     ep_grasped = ep_inside = False
                     episodes_done += 1
 
-            curriculum_success_rate = curr_inside_count / self.n_eval_episodes
-            self.logger.record("eval/curriculum_success_rate", curriculum_success_rate)
+            self.logger.record("eval/curriculum_grasp_rate",   curr_grasp_count  / self.n_eval_episodes)
+            self.logger.record("eval/curriculum_success_rate", curr_inside_count / self.n_eval_episodes)
 
         if self.verbose:
             print(
@@ -125,6 +165,7 @@ class StageSuccessCallback(BaseCallback):
                 f"  ({self.n_eval_episodes} eps)"
             )
 
+        self.logger.dump(step=self.num_timesteps)
         return True
 
 
