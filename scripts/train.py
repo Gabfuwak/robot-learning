@@ -89,6 +89,10 @@ def main():
         help="Override config fields, e.g. --set total_timesteps=500000 seed=1",
     )
     parser.add_argument(
+        "--resume", default=None, metavar="CHECKPOINT",
+        help="Path to a checkpoint .zip to resume training from.",
+    )
+    parser.add_argument(
         "--reward", default=None,
         help=(
             "Reward function to use. Available: "
@@ -138,7 +142,7 @@ def main():
 
     train_cfg = TrainConfig(seed=seed, **{k: v for k, v in cfg.items()
                                           if k in TrainConfig.__dataclass_fields__})
-    train(train_cfg, reward_fn=reward_fn)
+    train(train_cfg, reward_fn=reward_fn, resume_from=args.resume)
 
 
 if __name__ == "__main__":

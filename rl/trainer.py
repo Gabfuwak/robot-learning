@@ -11,6 +11,7 @@ Entry point
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -158,13 +159,16 @@ def _make_env(cfg: TrainConfig, reward_fn: RewardFn, rank: int, eval_mode: bool 
 # Main training function
 # ---------------------------------------------------------------------------
 
-def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
+def train(cfg: TrainConfig, reward_fn: RewardFn | None = None, resume_from: str | None = None) -> PPO:
     """
     Build environments, instantiate PPO, and run training.
 
     Args:
-        cfg:       Training configuration.
-        reward_fn: Reward function. Defaults to StagedPickPlaceReward.
+        cfg:         Training configuration.
+        reward_fn:   Reward function. Defaults to StagedPickPlaceReward.
+        resume_from: Path to a checkpoint .zip to resume from (e.g.
+                     "runs/.../checkpoints/ppo_750000_steps.zip").
+                     Timestep count and training state are preserved.
 
     Returns:
         The trained SB3 PPO model.
@@ -197,17 +201,25 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
     merged_algo_kwargs = {**_PPO_DEFAULTS, **cfg.algo_kwargs}
 
     # --- Instantiate model ---
-    model = PPO(
-        policy="MultiInputPolicy",
-        env=train_env,
-        learning_rate=cfg.learning_rate,
-        gamma=cfg.gamma,
-        policy_kwargs=policy_kwargs,
-        verbose=1,
-        seed=cfg.seed,
-        tensorboard_log=os.path.join(cfg.log_dir, "tb"),
-        **merged_algo_kwargs,
-    )
+    if resume_from:
+        print(f"Resuming from:   {resume_from}")
+        model = PPO.load(
+            resume_from,
+            env=train_env,
+            tensorboard_log=os.path.join(cfg.log_dir, "tb"),
+        )
+    else:
+        model = PPO(
+            policy="MultiInputPolicy",
+            env=train_env,
+            learning_rate=cfg.learning_rate,
+            gamma=cfg.gamma,
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            seed=cfg.seed,
+            tensorboard_log=os.path.join(cfg.log_dir, "tb"),
+            **merged_algo_kwargs,
+        )
 
     # --- Eval env for stage-success callback (separate from EvalCallback's env) ---
     stage_eval_env = DummyVecEnv([_make_env(cfg, reward_fn, rank=98, eval_mode=True)])
@@ -216,10 +228,26 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
     curriculum_cb       = None
     curriculum_eval_env = None
     if cfg.curriculum_init_dist > 0:
+        # Determine starting dist: resume from saved state, or max_dist if none found
+        if resume_from:
+            run_dir    = os.path.dirname(os.path.dirname(os.path.abspath(resume_from)))
+            state_file = os.path.join(run_dir, CurriculumCallback.STATE_FILE)
+            if os.path.exists(state_file):
+                with open(state_file) as _f:
+                    _resume_dist = json.load(_f)["current_dist"]
+                print(f"Curriculum state: resuming at current_dist={_resume_dist:.3f}m  (from {state_file})")
+            else:
+                _resume_dist = cfg.curriculum_max_dist
+                print(f"Curriculum state: no file found — starting at max_dist={_resume_dist:.3f}m")
+            curriculum_init = _resume_dist
+        else:
+            curriculum_init = cfg.curriculum_init_dist
+
         curriculum_cb = CurriculumCallback(
-            init_dist=cfg.curriculum_init_dist,
+            init_dist=curriculum_init,
             epsilon=cfg.curriculum_epsilon,
             max_dist=cfg.curriculum_max_dist,
+            save_path=save_path,
         )
         curriculum_eval_env = DummyVecEnv([_make_env(cfg, reward_fn, rank=97, eval_mode=True)])
 
@@ -265,7 +293,12 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None) -> PPO:
     print(f"Total timesteps: {cfg.total_timesteps:,}")
     print(f"PPO kwargs:      {merged_algo_kwargs}")
 
-    model.learn(total_timesteps=cfg.total_timesteps, callback=callbacks, progress_bar=True)
+    model.learn(
+        total_timesteps=cfg.total_timesteps,
+        callback=callbacks,
+        progress_bar=True,
+        reset_num_timesteps=resume_from is None,
+    )
 
     final_path = os.path.join(save_path, "ppo_final")
     model.save(final_path)

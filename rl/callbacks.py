@@ -139,16 +139,32 @@ class CurriculumCallback(BaseCallback):
         epsilon:    Max increment per grasped episode at full difficulty, single env
                     (dimensionless; typical range 0.01–0.2).
         max_dist:   Hard cap on max spawn distance (metres).
+        save_path:  Directory where ``curriculum_state.json`` is written on every
+                    update so that training can be resumed at the correct difficulty.
     """
 
-    def __init__(self, init_dist: float, epsilon: float, max_dist: float):
+    STATE_FILE = "curriculum_state.json"
+
+    def __init__(self, init_dist: float, epsilon: float, max_dist: float,
+                 save_path: str | None = None):
         super().__init__()
         self.current_dist = init_dist
         self.epsilon      = epsilon
         self.max_dist     = max_dist
+        self.save_path    = save_path
+
+    def _save_state(self) -> None:
+        if self.save_path is None:
+            return
+        import json
+        import os
+        os.makedirs(self.save_path, exist_ok=True)
+        with open(os.path.join(self.save_path, self.STATE_FILE), "w") as f:
+            json.dump({"current_dist": self.current_dist}, f)
 
     def _on_training_start(self) -> None:
         self.training_env.env_method("set_max_spawn_dist", self.current_dist)
+        self._save_state()
 
     def _on_step(self) -> bool:
         changed = False
@@ -161,6 +177,7 @@ class CurriculumCallback(BaseCallback):
 
         if changed:
             self.training_env.env_method("set_max_spawn_dist", self.current_dist)
+            self._save_state()
 
         self.logger.record("curriculum/max_spawn_dist", self.current_dist)
         return True
