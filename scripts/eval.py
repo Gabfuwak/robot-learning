@@ -89,8 +89,9 @@ def build_env(cfg: dict, split: str, render: bool, save_video: bool = False, ren
     horizon      = cfg.get("horizon", 500)
     control_freq = cfg.get("control_freq", 20)
     image_size   = cfg.get("image_size", 64)
-    use_camera   = cfg.get("use_camera_obs", False)
-    camera_names = cfg.get("camera_names", [
+    use_camera      = cfg.get("use_camera_obs", False)
+    include_cab_obs = cfg.get("include_cab_obs", False)
+    camera_names    = cfg.get("camera_names", [
         "robot0_agentview_left",
         "robot0_agentview_right",
         "robot0_eye_in_hand",
@@ -131,6 +132,7 @@ def build_env(cfg: dict, split: str, render: bool, save_video: bool = False, ren
         use_camera_obs=use_camera,
         camera_names=camera_names,
         image_size=image_size,
+        include_cab_obs=include_cab_obs,
     )
 
 
@@ -218,20 +220,21 @@ def main():
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    algo_name = cfg.get("algo", "SAC")
+    algo_name = cfg.get("algo", "PPO")
     print(f"Algo       : {algo_name}")
     print(f"Checkpoint : {args.checkpoint}")
     print(f"Episodes   : {args.n_episodes}")
     print(f"Split      : {args.split}")
 
-    from stable_baselines3.common.base_class import BaseAlgorithm
-    from rl.trainer import ALGO_REGISTRY
+    from stable_baselines3 import PPO, SAC
+
+    ALGO_REGISTRY = {"PPO": PPO, "SAC": SAC}
 
     algo_cls = ALGO_REGISTRY[algo_name]
     env      = build_env(cfg, args.split, args.render, args.save_video, args.render_size)
 
     print(f"Loading {algo_name} checkpoint: {args.checkpoint}")
-    model: BaseAlgorithm = algo_cls.load(args.checkpoint, env=None)
+    model = algo_cls.load(args.checkpoint, env=None)
 
     results = _run_episodes(
         n_episodes=args.n_episodes,

@@ -5,7 +5,7 @@ reward_fn: StagedPickPlaceReward
 
 # --- Algorithm ---
 algo_kwargs:
-  n_steps: 2048
+  n_steps: 1024
   batch_size: 64
   n_epochs: 10
   clip_range: 0.2
@@ -29,7 +29,7 @@ image_size: 64
 # max_spawn_dist grows by curriculum_epsilon for every training episode
 # where the object is successfully grasped, up to curriculum_max_dist.
 curriculum_init_dist: 0.05   # metres; 0 = disabled
-curriculum_epsilon: 0.05     # scaling factor: delta = epsilon * current_dist / n_envs
+curriculum_epsilon: 0.03     # scaling factor: delta = epsilon * current_dist / n_envs
 curriculum_max_dist: 0.50    # cap (metres)
 
 # --- Architecture ---
