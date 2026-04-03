@@ -4,3 +4,6 @@
 [submodule "deps/robocasa"]
 	path = deps/robocasa
 	url = https://github.com/robocasa/robocasa
+[submodule "deps/le-wm-robocasa"]
+	path = deps/le-wm-robocasa
+	url = https://github.com/Gabfuwak/le-wm-robocasa

@@ -26,6 +26,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from .architecture import RoboCasaFeaturesExtractor
+from .lewm_extractor import LeWMFeaturesExtractor
 from .callbacks import CurriculumCallback, RollingSuccessCallback, StageSuccessCallback
 from .env_wrapper import RoboCasaWrapper
 from .reward import RewardFn, StagedPickPlaceReward
@@ -88,6 +89,14 @@ class TrainConfig:
     state_embed_dim:  int             = 256
     image_embed_dim:  int             = 128
     net_arch:         list[int]       = field(default_factory=lambda: [256, 256])
+
+    # --- LeWM encoder (optional) ---
+    # If set, uses a frozen LeWM encoder instead of the CNN+state extractor.
+    # Requires use_camera_obs=True and camera_names to include
+    # "robot0_agentview_left" and "robot0_eye_in_hand".
+    lewm_checkpoint:    str           = ""       # e.g. "lewm_epoch_84" (no suffix)
+    lewm_embed_dim:     int           = 256
+    lewm_proprio_slice: tuple         = (7, 16)  # indices into state vector
 
     # --- Common hyperparameters (apply to all algorithms) ---
     seed:             int             = 42
@@ -227,14 +236,30 @@ def train(cfg: TrainConfig, reward_fn: RewardFn | None = None, resume_from: str 
     eval_env  = DummyVecEnv([_make_env(cfg, reward_fn, rank=99, eval_mode=True)])
 
     # --- Policy kwargs ---
-    policy_kwargs = dict(
-        features_extractor_class=RoboCasaFeaturesExtractor,
-        features_extractor_kwargs=dict(
-            state_embed_dim=cfg.state_embed_dim,
-            image_embed_dim=cfg.image_embed_dim,
-        ),
-        net_arch=cfg.net_arch,
-    )
+    if cfg.lewm_checkpoint:
+        assert cfg.use_camera_obs, "lewm_checkpoint requires use_camera_obs=True"
+        assert "robot0_agentview_left" in cfg.camera_names, \
+            "lewm_checkpoint requires 'robot0_agentview_left' in camera_names"
+        assert "robot0_eye_in_hand" in cfg.camera_names, \
+            "lewm_checkpoint requires 'robot0_eye_in_hand' in camera_names"
+        policy_kwargs = dict(
+            features_extractor_class=LeWMFeaturesExtractor,
+            features_extractor_kwargs=dict(
+                checkpoint=cfg.lewm_checkpoint,
+                embed_dim=cfg.lewm_embed_dim,
+                proprio_slice=cfg.lewm_proprio_slice,
+            ),
+            net_arch=cfg.net_arch,
+        )
+    else:
+        policy_kwargs = dict(
+            features_extractor_class=RoboCasaFeaturesExtractor,
+            features_extractor_kwargs=dict(
+                state_embed_dim=cfg.state_embed_dim,
+                image_embed_dim=cfg.image_embed_dim,
+            ),
+            net_arch=cfg.net_arch,
+        )
 
     # --- Merge PPO kwargs: defaults ← user overrides ---
     merged_algo_kwargs = {**_PPO_DEFAULTS, **cfg.algo_kwargs}

@@ -1,0 +1,59 @@
+# PPO training with frozen LeWM encoder as feature extractor
+
+# --- Reward ---
+reward_fn: SimplePickPlaceReward
+
+# --- Algorithm ---
+algo_kwargs:
+  n_steps: 1024
+  batch_size: 64
+  n_epochs: 10
+  clip_range: 0.2
+  ent_coef: 0.01
+  gae_lambda: 0.95
+
+# --- Environment ---
+env_name: PickPlaceCounterToCabinet
+layout_ids: -2
+style_ids: -2
+horizon: 500
+control_freq: 20
+
+# --- Observation ---
+use_camera_obs: true
+camera_names:
+  - robot0_agentview_left
+  - robot0_eye_in_hand
+image_size: 96
+include_cab_obs: false  # LeWM encoder infers this from pixels
+
+# --- Curriculum ---
+curriculum_init_dist: 0.05
+curriculum_epsilon: 0.03
+curriculum_max_dist: 0.50
+
+# --- LeWM encoder ---
+lewm_checkpoint: /home/gbwk/data/robocasa/lewm_epoch_84_object.ckpt
+lewm_embed_dim: 256
+lewm_proprio_slice: [7, 16]
+
+# --- Architecture (actor/critic MLP after the encoder) ---
+net_arch: [256, 256]
+
+# --- Common hyperparameters ---
+seed: 42
+total_timesteps: 1000000
+learning_rate: 0.0003
+gamma: 0.99
+n_envs: 3
+
+# --- Logging / saving ---
+save_dir: runs
+log_dir: /tmp/rl_logs
+checkpoint_freq: 50000
+n_eval_episodes: 5
+
+# --- Weights & Biases ---
+wandb_enabled: false
+wandb_entity: gbwk-proj
+wandb_project: robocasa-pickplace

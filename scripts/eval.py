@@ -111,10 +111,10 @@ def build_env(cfg: dict, split: str, render: bool, save_video: bool = False, ren
         robots="PandaOmron",
         controller_configs=ctrl,
         use_camera_obs=use_camera,
-        has_renderer=render,
-        has_offscreen_renderer=(use_camera and not render) or save_video,
+        has_renderer=False,
+        has_offscreen_renderer=use_camera or save_video,
         use_object_obs=True,
-        camera_names=list(set((camera_names if use_camera else []) + (VIZ_CAMERAS if save_video else []))),
+        camera_names=list(set((camera_names if use_camera else []) + (VIZ_CAMERAS if (render or save_video) else []))),
         camera_heights=render_size if save_video else image_size,
         camera_widths=render_size if save_video else image_size,
         control_freq=control_freq,
@@ -160,9 +160,6 @@ def _run_episodes(n_episodes: int, env, predict_fn, render: bool,
             total_reward += reward
             step += 1
             done = terminated or truncated
-
-            if render:
-                env.render()
 
             if save_video:
                 frame = render_tiled_frame(env.unwrapped_env, render_size, render_size)
@@ -216,6 +213,9 @@ def main():
     parser.add_argument("--video_dir",   default="eval_videos", help="Directory to save videos (default: eval_videos).")
     parser.add_argument("--render_size", type=int, default=256, help="Width/height of each camera tile (default: 256).")
     args = parser.parse_args()
+
+    if args.render:
+        args.save_video = True
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
